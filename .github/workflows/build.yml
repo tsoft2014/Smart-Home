@@ -18,18 +18,30 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Add 32-bit architecture for Android tools
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-
       - name: Install system dependencies
         run: |
+          sudo apt-get update
           sudo apt-get install -y \
-            build-essential ccache git libffi-dev python3-dev \
-            libltdl-dev libssl-dev libffi7 zlib1g-dev \
-            libncurses5:i386 libstdc++6:i386 zlib1g:i386 \
-            openjdk-17-jdk unzip wget zip
+            build-essential \
+            git \
+            ffmpeg \
+            libffi-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            python3-dev \
+            ccache \
+            openjdk-17-jdk \
+            zip \
+            unzip \
+            autoconf \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo5 \
+            cmake \
+            clang
 
       - name: Install Python build tools
         run: |
