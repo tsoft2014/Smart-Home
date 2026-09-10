@@ -13,12 +13,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1.2.0
-        id: buildozer
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          command: buildozer -v android debug
-          buildozer_version: stable
+          python-version: '3.10'
+
+      - name: Add 32-bit architecture for Android tools
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y \
+            build-essential ccache git libffi-dev python3-dev \
+            libltdl-dev libssl-dev libffi7 zlib1g-dev \
+            libncurses5:i386 libstdc++6:i386 zlib1g:i386 \
+            openjdk-17-jdk unzip wget zip
+
+      - name: Install Python build tools
+        run: |
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install "Cython<3.0.0" buildozer
+
+      - name: Build APK with Buildozer
+        run: |
+          yes | buildozer -v android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
