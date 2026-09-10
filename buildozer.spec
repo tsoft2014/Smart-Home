@@ -21,26 +21,27 @@ source.include_patterns = model/*
 # Версия приложения
 version = 0.1
 
-# Зависимости проекта
-# Vosk и cffi возвращены, так как без них распознавание речи на устройстве работать не будет
+# Зависимости проекта (kivy и pyjnius подключаются автоматически внутри python-for-android)
 requirements = python3,requests,plyer,cffi,vosk
 
 # Ориентация экрана
 orientation = portrait
 
 # Разрешения Android
-# Важно: FOREGROUND_SERVICE_MICROPHONE поддерживается начиная с Android API 34
 android.request_permissions = True
 android.permissions = RECORD_AUDIO, INTERNET, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, WAKE_LOCK
 
 # Архитектура процессора (современные 64-битные устройства)
 android.archs = arm64-v8a
 
-# Целевой API Android (поднят до 34 для корректной работы микрофонного сервиса)
+# Целевой API Android
 android.api = 34
 
 # Минимальный поддерживаемый API
 android.minapi = 21
+
+# Фиксация стабильной версии NDK для предотвращения ошибок компиляции libffi
+android.ndk = 25b
 
 # Полноэкранный режим (0 — выключен, строка состояния видна)
 fullscreen = 0
