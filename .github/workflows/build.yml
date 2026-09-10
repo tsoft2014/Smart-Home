@@ -1,54 +1,38 @@
-[app]
+name: Build Kivy APK
 
-# Название приложения
-title = Smart Home
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
 
-# Имя пакета
-package.name = smarthome
+jobs:
+  build:
+    runs-on: ubuntu-22.04
 
-# Домен пакета
-package.domain = org.mysmarthome
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-# Исходная директория проекта
-source.dir = .
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
 
-# Расширения файлов для включения в сборку
-source.include_exts = py,png,jpg,kv,atlas,json
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libffi-dev python3-dev \
+          gettext libssl-dev ccache ffmpeg libsdl2-dev libsdl2-image-dev \
+          libsdl2-mixin-dev libsdl2-ttf-dev libportmidi-dev \
+          python3-setuptools openjdk-17-jdk zip unzip tar
+        pip install --upgrade pip setuptools buildozer Cython
 
-# Папки и файлы для включения (модель Vosk)
-source.include_patterns = model/*
+    - name: Build APK with Buildozer
+      run: |
+        yes | buildozer -v android debug
 
-# Версия приложения
-version = 0.1
-
-# Зависимости проекта
-# Vosk и cffi возвращены, так как без них распознавание речи на устройстве работать не будет
-requirements = python3,kivy,requests,plyer,pyjnius,cffi,vosk
-
-# Ориентация экрана
-orientation = portrait
-
-# Разрешения Android
-# Важно: FOREGROUND_SERVICE_MICROPHONE поддерживается начиная с Android API 34
-android.request_permissions = True
-android.permissions = RECORD_AUDIO, INTERNET, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, WAKE_LOCK
-
-# Архитектура процессора (современные 64-битные устройства)
-android.archs = arm64-v8a
-
-# Целевой API Android (поднят до 34 для корректной работы микрофонного сервиса)
-android.api = 34
-
-# Минимальный поддерживаемый API
-android.minapi = 21
-
-# Полноэкранный режим (0 — выключен, строка состояния видна)
-fullscreen = 0
-
-[buildozer]
-
-# Уровень детализации логов (1 — информация)
-log_level = 1
-
-# Предупреждение при запуске от root (1 — включено)
-warn_on_root = 1
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-kivy-apk
+        path: bin/*.apk
