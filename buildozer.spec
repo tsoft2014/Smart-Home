@@ -35,13 +35,13 @@ android.permissions = RECORD_AUDIO, INTERNET, FOREGROUND_SERVICE, FOREGROUND_SER
 android.archs = arm64-v8a
 
 # Целевой API Android
-android.api = 34
+android.api = 33
 
 # Минимальный поддерживаемый API
-android.minapi = 21
+android.minapi = 24
 
 # Фиксация стабильной версии NDK для предотвращения ошибок компиляции libffi
-android.ndk = 25b
+android.ndk = 24
 
 # Полноэкранный режим (0 — выключен, строка состояния видна)
 fullscreen = 0
