@@ -23,7 +23,7 @@ version = 0.1
 
 # Зависимости проекта
 # Vosk и cffi возвращены, так как без них распознавание речи на устройстве работать не будет
-requirements = python3,kivy,requests,plyer,pyjnius,cffi,vosk
+requirements = python3,requests,plyer,cffi,vosk
 
 # Ориентация экрана
 orientation = portrait
