@@ -16,8 +16,10 @@ jobs:
       - name: Build APK with Docker
         run: |
           docker run --rm \
+            --entrypoint /bin/bash \
+            -e BUILDOZER_WARN_ON_ROOT=0 \
             -v ${{ github.workspace }}:/home/user/hostpython \
-            kivy/buildozer bash -c "yes | buildozer -v android debug"
+            kivy/buildozer -c "yes | buildozer -v android debug"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
