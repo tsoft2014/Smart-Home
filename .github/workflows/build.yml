@@ -3,24 +3,71 @@ name: Build Android APK
 on:
   push:
     branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/kivy/buildozer:latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build APK
-        run: |
-          buildozer android debug
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Upload APK
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            zip \
+            unzip \
+            openjdk-17-jdk \
+            python3-pip \
+            autotools-dev \
+            autoconf \
+            libtool \
+            pkg-config \
+            cmake \
+            ninja-build \
+            libssl-dev \
+            libffi-dev \
+            libltdl-dev \
+            libncurses5 \
+            libstdc++6 \
+            zlib1g
+          pip install --upgrade "pip<24.0" "setuptools<69.0.0"
+          pip install "buildozer==1.5.0" "cython==0.29.36"
+
+      - name: Clean Broken Buildozer Cache
+        run: |
+          rm -rf .buildozer
+          rm -rf ~/.buildozer
+
+      - name: Build APK with Buildozer
+        run: |
+          yes | buildozer android debug
+
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SmartHome-APK
+          name: SmartHome-Debug-APK
           path: bin/*.apk
