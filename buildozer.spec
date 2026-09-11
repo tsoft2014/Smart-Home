@@ -12,6 +12,9 @@ package.domain = org.smarthome
 # (str) Path to the main source code
 source.dir = .
 
+# (str) Application versioning (ОБЯЗАТЕЛЬНОЕ ПОЛЕ)
+version = 0.1
+
 # (list) Source files to include
 source.include_exts = py,png,jpg,kv,atlas,json
 
@@ -41,5 +44,5 @@ android.ndk = 25b
 # (int) Log level (0 = error only, 1 = info, 2 = debug)
 log_level = 2
 
-# (int) Display warning if buildozer is run as root (0 = отключить запрос [y/n])
+# (int) Display warning if buildozer is run as root
 warn_on_root = 0
