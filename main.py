@@ -359,7 +359,7 @@ class VoiceAssistant:
         if platform == 'android' and HAS_SPEECH_RECOGNIZER:
             self.handler.post(PyRunnable(self._init_and_start_recognizer))
         else:
-            self.app.update_assistant_status("Ассистент: SpeechRecognizer доступен на Android",
+            self.app.update_assistant_status("Ассистент: Готов к работе (Режим ПК)",
                                              color=(0.6, 0.6, 0.6, 1))
 
     def _init_and_start_recognizer(self):
@@ -396,7 +396,6 @@ class VoiceAssistant:
 
                 @java_method('(I)V')
                 def onError(self, error):
-                    # При ошибке тайм-аута или тишины автоматически возобновляем прослушивание
                     Clock.schedule_once(lambda dt: self.assistant.restart_listening())
 
                 @java_method('(Landroid/os/Bundle;)V')
@@ -928,8 +927,9 @@ class SmartHomeApp(App):
             return row
 
         def record_to_entry(entry_widget):
+            # Безопасная проверка платформы для работы на ПК
             if platform != 'android' or not HAS_SPEECH_RECOGNIZER:
-                entry_widget.text = "Только на Android"
+                self.update_assistant_status("Запись с микрофона доступна на Android", color=(0.9, 0.6, 0.2, 1))
                 return
 
             original_text = entry_widget.text
@@ -976,7 +976,7 @@ class SmartHomeApp(App):
                             Clock.schedule_once(lambda dt: setattr(self.widget, 'text', self.orig))
                             try:
                                 self.rec_obj.destroy()
-                            except:
+                            except Exception:
                                 pass
                             self._restore_status()
 
@@ -991,7 +991,7 @@ class SmartHomeApp(App):
                             Clock.schedule_once(lambda dt: setattr(self.widget, 'text', txt))
                             try:
                                 self.rec_obj.destroy()
-                            except:
+                            except Exception:
                                 pass
                             self._restore_status()
 
@@ -1029,10 +1029,11 @@ class SmartHomeApp(App):
             if hasattr(self, 'assistant') and self.assistant and self.assistant.speech_recognizer:
                 try:
                     self.assistant.speech_recognizer.stopListening()
-                except:
+                except Exception:
                     pass
 
-            self.assistant.handler.post(PyRunnable(_listen_setting))
+            if hasattr(self, 'assistant') and self.assistant and self.assistant.handler:
+                self.assistant.handler.post(PyRunnable(_listen_setting))
 
         content.add_widget(create_section_header("Общие настройки"))
         ip_input = create_auto_input(self.config_data.get("device_ip", "192.168.1.39"), multiline=False)
