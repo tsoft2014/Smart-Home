@@ -53,9 +53,12 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip setuptools wheel
           python3 -m pip install "Cython<3.0.0" buildozer
+          # Обновляем python-for-android до актуальной версии
+          python3 -m pip install --upgrade python-for-android
 
       - name: Build APK with Buildozer
         run: |
+          rm -rf .buildozer
           yes | buildozer -v android debug
 
       - name: Upload APK Artifact
