@@ -21,7 +21,11 @@ version = 0.1
 source.include_exts = py,png,jpg,kv,atlas,json
 
 # (list) Application requirements
-requirements = python3,kivy,requests,pyjnius,plyer
+# Было:
+# requirements = python3,kivy,requests,pyjnius,plyer
+
+# Стало (явно указываем проверенную версию python3):
+requirements = python3==3.11.5,kivy,requests,pyjnius,plyer
 
 # (str) Supported orientations (landscape, sensor, portrait or all)
 orientation = portrait
