@@ -50,8 +50,9 @@ jobs:
 
       - name: Install Python build tools
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
-          python3 -m pip install "Cython<3.0.0" buildozer "python-for-android<2025.0.0"
+          python3 -m pip install "pip<24.1" setuptools wheel
+          python3 -m pip install "Cython<3.0.0" buildozer
+          python3 -m pip install git+https://github.com/kivy/python-for-android.git@master
 
       - name: Build APK with Buildozer
         run: |
