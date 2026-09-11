@@ -41,5 +41,5 @@ android.ndk = 25b
 # (int) Log level (0 = error only, 1 = info, 2 = debug)
 log_level = 2
 
-# (int) Display warning if buildozer is run as root
+# (int) Display warning if buildozer is run as root (0 = отключить запрос [y/n])
 warn_on_root = 0
