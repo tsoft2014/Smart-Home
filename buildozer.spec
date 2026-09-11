@@ -1,51 +1,60 @@
 [app]
 
-# (str) Title of your application
+# (str) Название приложения
 title = Управление освещением
 
-# (str) Package name
-package.name = lightingcontrol
+# (str) Имя пакета (без пробелов и спецсимволов)
+package.name = smarthome
 
-# (str) Package domain (needed for android packaging)
+# (str) Домен организации (обратный домен)
 package.domain = org.smarthome
 
-# (str) Path to the main source code
+# (str) Исходный код находится в текущей директории
 source.dir = .
 
-# (str) Application versioning
-version = 0.1
-
-# (list) Source files to include
+# (list) Расширения файлов, которые нужно включить в APK (ОБЯЗАТЕЛЬНО картинки и json!)
 source.include_exts = py,png,jpg,kv,atlas,json
 
-# (list) Application requirements (без явного указания версии python3, чтобы совпало с hostpython 3.14)
-requirements = python3,kivy,requests,pyjnius,plyer
+# (str) Версия приложения
+version = 1.0.0
 
-# (str) Supported orientations (landscape, sensor, portrait or all)
+# (list) Зависимости проекта
+requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius
+
+# (str) Ориентация экрана (вертикальная)
 orientation = portrait
 
-# (list) Permissions
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,RECORD_AUDIO
+# (bool) Показывать статус-бар телефона
+fullscreen = 0
 
-# (int) Target Android API
+# --- Настройки Android ---
+
+# (list) Системные разрешения Android
+android.permissions = INTERNET, RECORD_AUDIO
+
+# (int) Target Android API (33 — стандарт для modern Android)
 android.api = 33
 
-# (int) Minimum API your APK will support
+# (int) Минимальная поддерживаемая версия Android API (21 = Android 5.0)
 android.minapi = 21
 
-# (bool) Use AndroidX support
-android.androidx = True
+# (list) Архитектуры процессоров (поддержка большинства современных смартфонов)
+android.archs = arm64-v8a, armeabi-v7a
 
-# (str) Android NDK version to use
-android.ndk = 25b
+# (bool) Запрашивать разрешения при первом запуске
+android.grant_permissions = True
 
-# (list) The Android architectures to build for (собираем только под arm64-v8a, чтобы сократить ошибки и ускорить сборку)
-android.archs = arm64-v8a
+# (bool) Разрешить резервное копирование
+android.allow_backup = True
+
+# (str) Тема приложения (стандартная с заголовком)
+android.theme = @android:style/Theme.NoTitleBar
+
 
 [buildozer]
 
-# (int) Log level (0 = error only, 1 = info, 2 = debug)
+# (int) Уровень логов (2 = подробный вывод при сборке)
 log_level = 2
 
-# (int) Display warning if buildozer is run as root
-warn_on_root = 0
+# (int) Отображение предупреждений
+warn_on_root = 1
