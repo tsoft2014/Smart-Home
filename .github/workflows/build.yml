@@ -1,9 +1,11 @@
-name: Build Kivy APK
+name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Позволяет запускать сборку вручную через интерфейс GitHub
 
 jobs:
   build:
@@ -13,16 +15,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build APK with Docker (Stable Kivy Image)
+      - name: Free Disk Space
         run: |
-          docker run --rm \
-            --entrypoint /bin/bash \
-            -w /home/user/hostpython \
-            -v ${{ github.workspace }}:/home/user/hostpython \
-            kivy/buildozer:1.5.0 -c "rm -rf .buildozer && yes | buildozer -v android debug"
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+
+      - name: Build with Buildozer
+        uses: ArtemSydoryk/buildozer-action@v1
+        with:
+          command: buildozer android debug
+          subfolder: .
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: python-kivy-apk
+          name: SmartHome-Debug-APK
           path: bin/*.apk
