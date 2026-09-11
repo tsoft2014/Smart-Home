@@ -12,14 +12,14 @@ package.domain = org.smarthome
 # (str) Path to the main source code
 source.dir = .
 
-# (str) Application versioning (ОБЯЗАТЕЛЬНОЕ ПОЛЕ)
+# (str) Application versioning
 version = 0.1
 
 # (list) Source files to include
 source.include_exts = py,png,jpg,kv,atlas,json
 
-# (list) Application requirements
-requirements = python3,kivy,requests,pyjnius,plyer
+# (list) Application requirements (жестко фиксируем Python 3.11.5)
+requirements = python3==3.11.5,kivy,requests,pyjnius,plyer
 
 # (str) Supported orientations (landscape, sensor, portrait or all)
 orientation = portrait
@@ -38,6 +38,9 @@ android.androidx = True
 
 # (str) Android NDK version to use
 android.ndk = 25b
+
+# (str) python-for-android git branch to use
+p4a.branch = master
 
 [buildozer]
 
