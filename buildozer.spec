@@ -1,6 +1,6 @@
 [app]
 
-# (str) Название приложения на экране телефона
+# (str) Название приложения на экране смартфона
 title = Управление освещением
 
 # (str) Имя пакета (латиницей, без пробелов)
@@ -12,24 +12,24 @@ package.domain = org.smarthome
 # (str) Директория с исходным кодом
 source.dir = .
 
-# (list) Расширения файлов для включения в APK (ОБЯЗАТЕЛЬНО картинки и json!)
+# (list) Расширения файлов для включения в APK (включая иконки и json-конфиг)
 source.include_exts = py,png,jpg,kv,atlas,json
 
 # (str) Версия приложения
 version = 1.0.0
 
-# (list) Зависимости проекта (фиксируем стабильный Python 3.11)
-requirements = python3==3.11.0,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius
+# (list) Зависимости проекта
+requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius
 
-# (str) Ориентация экрана (вертикальная)
+# (str) Ориентация экрана
 orientation = portrait
 
-# (bool) Показывать статус-бар телефона (0 - показывать, 1 - во весь экран)
+# (bool) Показывать статус-бар телефона (0 - показывать)
 fullscreen = 0
 
 # --- Настройки Android ---
 
-# (list) Разрешения Android для микрофона и работы с платами по Wi-Fi
+# (list) Разрешения Android для работы сети и микрофона
 android.permissions = INTERNET, RECORD_AUDIO
 
 # (int) Target Android API
@@ -41,7 +41,7 @@ android.minapi = 21
 # (list) Поддерживаемые архитектуры процессоров
 android.archs = arm64-v8a, armeabi-v7a
 
-# (bool) Автоматически запрашивать разрешения при запуске
+# (bool) Запрашивать разрешения при запуске приложения
 android.grant_permissions = True
 
 # (bool) Разрешить резервное копирование
@@ -50,9 +50,9 @@ android.allow_backup = True
 # (str) Тема приложения
 android.theme = @android:style/Theme.NoTitleBar
 
-# --- Фикс тулчейна python-for-android (Защита от ошибок venv/pip) ---
+# --- Настройки python-for-android (Фиксация стабильной версии) ---
 p4a.fork = kivy
-p4a.branch = master
+p4a.branch = v2024.01.21
 
 
 [buildozer]
@@ -60,5 +60,5 @@ p4a.branch = master
 # (int) Уровень логов (2 = подробный вывод)
 log_level = 2
 
-# (int) Предупреждения при запуске от root
+# (int) Предупреждение при запуске от root
 warn_on_root = 1
