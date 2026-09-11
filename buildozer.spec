@@ -18,8 +18,8 @@ version = 0.1
 # (list) Source files to include
 source.include_exts = py,png,jpg,kv,atlas,json
 
-# (list) Application requirements (жестко фиксируем Python 3.11.5)
-requirements = python3==3.11.5,kivy,requests,pyjnius,plyer
+# (list) Application requirements (без явного указания версии python3, чтобы совпало с hostpython 3.14)
+requirements = python3,kivy,requests,pyjnius,plyer
 
 # (str) Supported orientations (landscape, sensor, portrait or all)
 orientation = portrait
@@ -39,8 +39,8 @@ android.androidx = True
 # (str) Android NDK version to use
 android.ndk = 25b
 
-# (str) python-for-android git branch to use
-p4a.branch = master
+# (list) The Android architectures to build for (собираем только под arm64-v8a, чтобы сократить ошибки и ускорить сборку)
+android.archs = arm64-v8a
 
 [buildozer]
 
