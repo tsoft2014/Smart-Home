@@ -1,4 +1,6 @@
 [app]
+# (str) Android NDK version to use
+android.ndk = 25b
 
 # (str) Title of your application
 title = Управление освещением
