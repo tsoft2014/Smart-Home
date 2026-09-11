@@ -1,4 +1,11 @@
 [app]
+[app]
+
+# (str) Path to the main source code (relative to buildozer.spec)
+source.dir = .
+
+# (str) Application versioning (method 1)
+version = 0.1
 
 # (str) Title of your application
 title = Управление освещением
