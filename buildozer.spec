@@ -1,55 +1,43 @@
 [app]
 
-# Название приложения
-title = Smart Home
+# (str) Title of your application
+title = Управление освещением
 
-# Имя пакета
-package.name = smarthome
+# (str) Package name
+package.name = lightingcontrol
 
-# Домен пакета
-package.domain = org.mysmarthome
+# (str) Package domain (needed for android packaging)
+package.domain = org.smarthome
 
-# Исходная директория проекта
-source.dir = .
-
-# Расширения файлов для включения в сборку
+# (list) Source files to include (letting .json and .png for icons/config)
 source.include_exts = py,png,jpg,kv,atlas,json
 
-# Папки и файлы для включения (модель Vosk)
-source.include_patterns = model/*
+# (list) Application requirements
+# Specify 'python3', 'kivy', 'requests', 'pyjnius', 'plyer'
+requirements = python3,kivy,requests,pyjnius,plyer
 
-# Версия приложения
-version = 0.1
-
-# Зависимости проекта (kivy и pyjnius подключаются автоматически внутри python-for-android)
-requirements = python3,requests,plyer,cffi,vosk
-
-# Ориентация экрана
+# (str) Supported orientations (landscape, sensor, portrait or all)
 orientation = portrait
 
-# Разрешения Android
-android.request_permissions = True
-android.permissions = RECORD_AUDIO, INTERNET, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, WAKE_LOCK
+# (list) Permissions
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,RECORD_AUDIO
 
-# Архитектура процессора (современные 64-битные устройства)
-android.archs = arm64-v8a
-
-# Целевой API Android
+# (int) Target Android API, should be as high as possible.
 android.api = 33
 
-# Минимальный поддерживаемый API
-android.minapi = 24
+# (int) Minimum API your APK will support.
+android.minapi = 21
 
-# Фиксация стабильной версии NDK для предотвращения ошибок компиляции libffi
-android.ndk = 24
+# (bool) Use AndroidX support
+android.androidx = True
 
-# Полноэкранный режим (0 — выключен, строка состояния видна)
-fullscreen = 0
+# (str) Icon of the application (optional, if you have icon.png)
+#icon.filename = %(source.dir)s/icon.png
 
 [buildozer]
 
-# Уровень детализации логов (1 — информация)
-log_level = 1
+# (int) Log level (0 = error only, 1 = info, 2 = debug (with command output))
+log_level = 2
 
-# Предупреждение при запуске от root (1 — включено)
+# (int) Display warning if buildozer is run as root (0 = False, 1 = True)
 warn_on_root = 1
