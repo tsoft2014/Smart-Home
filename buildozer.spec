@@ -1,26 +1,45 @@
-name: Build Kivy APK
+[app]
 
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+# (str) Title of your application
+title = Управление освещением
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+# (str) Package name
+package.name = lightingcontrol
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+# (str) Package domain (needed for android packaging)
+package.domain = org.smarthome
 
-      - name: Build APK with Docker (Official Kivy Image)
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/home/user/hostpython \
-            kivy/buildozer android debug
+# (str) Path to the main source code
+source.dir = .
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-kivy-apk
-          path: bin/*.apk
+# (list) Source files to include
+source.include_exts = py,png,jpg,kv,atlas,json
+
+# (list) Application requirements
+requirements = python3,kivy,requests,pyjnius,plyer
+
+# (str) Supported orientations (landscape, sensor, portrait or all)
+orientation = portrait
+
+# (list) Permissions
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,RECORD_AUDIO
+
+# (int) Target Android API
+android.api = 33
+
+# (int) Minimum API your APK will support
+android.minapi = 21
+
+# (bool) Use AndroidX support
+android.androidx = True
+
+# (str) Android NDK version to use
+android.ndk = 25b
+
+[buildozer]
+
+# (int) Log level (0 = error only, 1 = info, 2 = debug)
+log_level = 2
+
+# (int) Display warning if buildozer is run as root
+warn_on_root = 1
