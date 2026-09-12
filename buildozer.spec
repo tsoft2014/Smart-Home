@@ -30,8 +30,7 @@ fullscreen = 0
 # --- Настройки Android ---
 
 # (list) Разрешения Android для работы сети и микрофона
-android.permissions = INTERNET, RECORD_AUDIO
-
+android.permissions = INTERNET, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
 # (int) Target Android API
 android.api = 33
 
