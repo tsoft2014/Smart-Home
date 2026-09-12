@@ -7,8 +7,8 @@ import requests
 
 from kivy.config import Config
 
-Config.set('graphics', 'width', '380')
-Config.set('graphics', 'height', '520')
+Config.set('graphics', 'width', '400')
+Config.set('graphics', 'height', '700')
 
 from kivy.app import App
 from kivy.clock import Clock, mainthread
@@ -28,7 +28,7 @@ from kivy.uix.relativelayout import RelativeLayout
 from kivy.graphics import Color, RoundedRectangle
 
 # --- Размеры окна для тестов на ПК ---
-Window.size = (380, 680)
+#Window.size = (380, 680)
 
 # Проверка платформы Android и инициализация Java-классов для SpeechRecognizer
 if platform == 'android':
@@ -236,6 +236,7 @@ class LampRow(BoxLayout):
     def __init__(self, channel_id, icon_off, icon_on, base_url_provider, app_ref=None, **kwargs):
         super().__init__(
             orientation='horizontal',
+            size_hint_x=1,  # <--- Обязательно добавьте эту строчку сюда
             padding=[dp(15), dp(10), dp(15), dp(10)],
             size_hint_y=None,
             height=dp(110),
