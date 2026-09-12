@@ -967,7 +967,7 @@ class SmartHomeApp(App):
                     setting_recognizer = SpeechRecognizer.createSpeechRecognizer(activity)
 
                     class SettingListener(PythonJavaClass):
-                        __javaclass__ = 'android/speech/RecognitionListener'
+                        __javainterfaces__ = ['android/speech/RecognitionListener']
 
                         def __init__(self, rec_obj, widget, orig, app_ref):
                             super().__init__()
