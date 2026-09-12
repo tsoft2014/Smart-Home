@@ -27,9 +27,6 @@ from kivy.utils import platform
 from kivy.uix.relativelayout import RelativeLayout
 from kivy.graphics import Color, RoundedRectangle
 
-# --- Размеры окна для тестов на ПК ---
-#Window.size = (380, 680)
-
 # Проверка платформы Android и инициализация Java-классов для SpeechRecognizer
 if platform == 'android':
     try:
@@ -46,7 +43,7 @@ if platform == 'android':
 
 
         class PyRunnable(PythonJavaClass):
-            __javaclass__ = 'java/lang/Runnable'
+            __javainterfaces__ = ['java/lang/Runnable']
 
             def __init__(self, callback):
                 super().__init__()
@@ -236,7 +233,7 @@ class LampRow(BoxLayout):
     def __init__(self, channel_id, icon_off, icon_on, base_url_provider, app_ref=None, **kwargs):
         super().__init__(
             orientation='horizontal',
-            size_hint_x=1,  # <--- Обязательно добавьте эту строчку сюда
+            size_hint_x=1,
             padding=[dp(15), dp(10), dp(15), dp(10)],
             size_hint_y=None,
             height=dp(110),
@@ -397,7 +394,8 @@ class VoiceAssistant:
 
                 @java_method('(I)V')
                 def onError(self, error):
-                    Clock.schedule_once(lambda dt: self.assistant.restart_listening())
+                    print(f"[SPEECH ERROR CODE]: {error}")
+                    Clock.schedule_once(lambda dt: self.assistant.restart_listening(), 0.5)
 
                 @java_method('(Landroid/os/Bundle;)V')
                 def onResults(self, results):
@@ -428,6 +426,11 @@ class VoiceAssistant:
             return
         if platform == 'android' and self.speech_recognizer:
             try:
+                try:
+                    self.speech_recognizer.stopListening()
+                except Exception:
+                    pass
+
                 intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
@@ -436,8 +439,8 @@ class VoiceAssistant:
                 def start_act():
                     try:
                         self.speech_recognizer.startListening(intent)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[START LISTENING ERROR]: {e}")
 
                 self.handler.post(PyRunnable(start_act))
 
@@ -602,7 +605,6 @@ class SmartHomeApp(App):
 
         Window.clearcolor = (0.11, 0.11, 0.11, 1)
 
-        # 1. Главный контейнер на весь экран (size_hint=(1, 1) критически важен)
         root_layout = BoxLayout(
             orientation='vertical',
             size_hint=(1, 1),
@@ -610,7 +612,6 @@ class SmartHomeApp(App):
             spacing=dp(10)
         )
 
-        # 2. Шапка на всю ширину
         header_box = RelativeLayout(size_hint=(1, None), height=dp(45))
 
         wifi_img_path = get_img(IMG_WIFI)
@@ -653,7 +654,6 @@ class SmartHomeApp(App):
 
         root_layout.add_widget(header_box)
 
-        # 3. Блок текста на всю ширину
         labels_container = BoxLayout(
             orientation='vertical',
             size_hint=(1, None),
@@ -686,7 +686,6 @@ class SmartHomeApp(App):
         labels_container.add_widget(self.assistant_label)
         root_layout.add_widget(labels_container)
 
-        # 4. Сетка ламп внутри ScrollView на всю ширину
         lamps_container = GridLayout(cols=1, spacing=dp(10), size_hint_x=1, size_hint_y=None)
         lamps_container.bind(minimum_height=lamps_container.setter('height'))
 
@@ -703,12 +702,10 @@ class SmartHomeApp(App):
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-        from kivy.uix.scrollview import ScrollView
         scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
         scroll.add_widget(lamps_container)
         root_layout.add_widget(scroll)
 
-        # 5. Нижние кнопки на всю ширину
         btn_all_on = Button(
             text="ВКЛЮЧИТЬ ВСЕ",
             font_size='13sp',
@@ -742,7 +739,6 @@ class SmartHomeApp(App):
         btn_box.add_widget(btn_all_off)
         root_layout.add_widget(btn_box)
 
-        # Запрос разрешений и запуск микрофона
         self.request_android_permissions(on_granted=self._start_assistant)
 
         Clock.schedule_once(lambda dt: self.poll_statuses(None), 0.5)
@@ -751,9 +747,17 @@ class SmartHomeApp(App):
         return root_layout
 
     def _start_assistant(self):
-        self.assistant = VoiceAssistant(self, self.lamp_objects)
-        self.assistant.start_listening()
-        Clock.schedule_interval(self.assistant.check_activity_timeout, 1.0)
+        Clock.schedule_once(lambda dt: self._init_voice_assistant(), 0.1)
+
+    def _init_voice_assistant(self):
+        try:
+            self.assistant = VoiceAssistant(self, self.lamp_objects)
+            self.assistant.start_listening()
+            Clock.schedule_interval(self.assistant.check_activity_timeout, 1.0)
+            print("[ASSISTANT] Голосовой ассистент успешно запущен")
+        except Exception as e:
+            print(f"[ASSISTANT ERROR]: {e}")
+            self.update_assistant_status("Ассистент: Ошибка запуска", color=(0.9, 0.2, 0.2, 1))
 
     @mainthread
     def set_wifi_status(self, is_connected: bool):
@@ -813,7 +817,7 @@ class SmartHomeApp(App):
                         print("[PERMISSIONS] Отказано в доступе к микрофону")
                         self.update_assistant_status("Ассистент: Нет прав на микрофон", color=(0.9, 0.2, 0.2, 1))
 
-                request_permissions([Permission.RECORD_AUDIO, Permission.INTERNET], cb)
+                request_permissions([Permission.RECORD_AUDIO], cb)
             except Exception as e:
                 print(f"[PERMISSIONS ERROR]: {e}")
                 if on_granted:
@@ -949,7 +953,6 @@ class SmartHomeApp(App):
             return row
 
         def record_to_entry(entry_widget):
-            # Безопасная проверка платформы для работы на ПК
             if platform != 'android' or not HAS_SPEECH_RECOGNIZER:
                 self.update_assistant_status("Запись с микрофона доступна на Android", color=(0.9, 0.6, 0.2, 1))
                 return
