@@ -1216,10 +1216,12 @@ class SmartHomeApp(App):
             self.config_data["voice_responses"] = updated_resps
 
             try:
-                config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+                base_dir = self.user_data_dir if hasattr(self, 'user_data_dir') else os.path.dirname(
+                    os.path.abspath(__file__))
+                config_path = os.path.join(base_dir, "config.json")
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(self.config_data, f, ensure_ascii=False, indent=4)
-                print("[CONFIG] Настройки успешно сохранены!")
+                print(f"[CONFIG] Настройки успешно сохранены в: {config_path}")
             except Exception as e:
                 print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
 
