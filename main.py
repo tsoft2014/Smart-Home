@@ -692,8 +692,12 @@ class SmartHomeApp(App):
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-        root_layout.add_widget(lamps_container)
-        root_layout.add_widget(Widget())
+            # Оборачиваем лампы в ScrollView, чтобы они не ломали сетку, если их станет больше
+        from kivy.uix.scrollview import ScrollView
+        scroll = ScrollView(size_hint=(1, 1))
+        scroll.add_widget(lamps_container)
+        root_layout.add_widget(scroll)
+        #root_layout.add_widget(Widget())
 
         btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_y=None, height=dp(50))
 
@@ -717,6 +721,7 @@ class SmartHomeApp(App):
         )
         btn_all_off.bind(on_press=lambda x: self.turn_all_off())
 
+        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_y=None, height=dp(50))
         btn_box.add_widget(btn_all_on)
         btn_box.add_widget(btn_all_off)
         root_layout.add_widget(btn_box)
