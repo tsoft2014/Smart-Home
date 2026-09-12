@@ -650,11 +650,12 @@ class SmartHomeApp(App):
 
         root_layout.add_widget(header_box)
 
+        # 1. Исправленный контейнер текста (увеличена высота, чтобы текст не обрезался)
         labels_container = BoxLayout(
             orientation='vertical',
             size_hint_y=None,
-            height=dp(75),
-            spacing=dp(4)
+            height=dp(95),
+            spacing=dp(6)
         )
 
         self.temp_label = Label(
@@ -662,21 +663,31 @@ class SmartHomeApp(App):
             font_size='20sp',
             bold=True,
             color=(1, 1, 1, 1),
-            halign='center'
+            halign='center',
+            valign='middle'
         )
+        self.temp_label.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
 
         self.assistant_label = Label(
             text="Ассистент: Инициализация...",
             font_size='13sp',
             color=(0.6, 0.6, 0.6, 1),
-            halign='center'
+            halign='center',
+            valign='middle'
         )
+        self.assistant_label.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
 
         labels_container.add_widget(self.temp_label)
         labels_container.add_widget(self.assistant_label)
         root_layout.add_widget(labels_container)
 
-        lamps_container = GridLayout(cols=1, spacing=dp(10), size_hint_y=None)
+        # 2. Сетка ламп с обязательным size_hint_x=1
+        lamps_container = GridLayout(
+            cols=1,
+            spacing=dp(10),
+            size_hint_x=1,
+            size_hint_y=None
+        )
         lamps_container.bind(minimum_height=lamps_container.setter('height'))
 
         icon_pairs = [
@@ -692,33 +703,40 @@ class SmartHomeApp(App):
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-            # Оборачиваем лампы в ScrollView, чтобы они не ломали сетку, если их станет больше
         from kivy.uix.scrollview import ScrollView
-        scroll = ScrollView(size_hint=(1, 1))
+        scroll = ScrollView(
+            size_hint=(1, 1),
+            do_scroll_x=False,
+            do_scroll_y=True
+        )
         scroll.add_widget(lamps_container)
         root_layout.add_widget(scroll)
-        #root_layout.add_widget(Widget())
 
-        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_y=None, height=dp(50))
-
+        # 3. Нижние кнопки с исправленным текстом и размером шрифта 12sp
         btn_all_on = Button(
             text="ВКЛЮЧИТЬ ВСЕ",
-            font_size='14sp',
+            font_size='12sp',
             bold=True,
             background_normal='',
-            background_color=(0, 0, 0, 0),  # Полупрозрачный зеленый фон, чтобы кнопка была видна
-            color=(0.2, 0.85, 0.3, 1)
+            background_color=(0, 0, 0, 0),
+            color=(0.2, 0.85, 0.3, 1),
+            halign='center',
+            valign='middle'
         )
+        btn_all_on.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
         btn_all_on.bind(on_press=lambda x: self.turn_all_on())
 
         btn_all_off = Button(
             text="ВЫКЛЮЧИТЬ ВСЕ",
-            font_size='14sp',
+            font_size='12sp',
             bold=True,
             background_normal='',
-            background_color=(0, 0, 0, 0),  # Полупрозрачный красный фон
-            color=(0.9, 0.2, 0.2, 1)
+            background_color=(0, 0, 0, 0),
+            color=(0.9, 0.2, 0.2, 1),
+            halign='center',
+            valign='middle'
         )
+        btn_all_off.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
         btn_all_off.bind(on_press=lambda x: self.turn_all_off())
 
         btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_y=None, height=dp(50))
