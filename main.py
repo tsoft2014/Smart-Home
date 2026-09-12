@@ -601,14 +601,16 @@ class SmartHomeApp(App):
 
         Window.clearcolor = (0.11, 0.11, 0.11, 1)
 
+        # 1. Главный контейнер на весь экран (size_hint=(1, 1) критически важен)
         root_layout = BoxLayout(
             orientation='vertical',
+            size_hint=(1, 1),
             padding=[dp(15), dp(15), dp(15), dp(10)],
-            # [слева, снизу, справа, сверху] — уменьшайте второе или четвертое значение
             spacing=dp(10)
         )
 
-        header_box = RelativeLayout(size_hint_y=None, height=dp(45))
+        # 2. Шапка на всю ширину
+        header_box = RelativeLayout(size_hint=(1, None), height=dp(45))
 
         wifi_img_path = get_img(IMG_WIFI)
         if os.path.exists(wifi_img_path):
@@ -650,12 +652,12 @@ class SmartHomeApp(App):
 
         root_layout.add_widget(header_box)
 
-        # 1. Исправленный контейнер текста (увеличена высота, чтобы текст не обрезался)
+        # 3. Блок текста на всю ширину
         labels_container = BoxLayout(
             orientation='vertical',
-            size_hint_y=None,
-            height=dp(95),
-            spacing=dp(6)
+            size_hint=(1, None),
+            height=dp(85),
+            spacing=dp(4)
         )
 
         self.temp_label = Label(
@@ -663,6 +665,7 @@ class SmartHomeApp(App):
             font_size='20sp',
             bold=True,
             color=(1, 1, 1, 1),
+            size_hint=(1, 1),
             halign='center',
             valign='middle'
         )
@@ -672,6 +675,7 @@ class SmartHomeApp(App):
             text="Ассистент: Инициализация...",
             font_size='13sp',
             color=(0.6, 0.6, 0.6, 1),
+            size_hint=(1, 1),
             halign='center',
             valign='middle'
         )
@@ -681,13 +685,8 @@ class SmartHomeApp(App):
         labels_container.add_widget(self.assistant_label)
         root_layout.add_widget(labels_container)
 
-        # 2. Сетка ламп с обязательным size_hint_x=1
-        lamps_container = GridLayout(
-            cols=1,
-            spacing=dp(10),
-            size_hint_x=1,
-            size_hint_y=None
-        )
+        # 4. Сетка ламп внутри ScrollView на всю ширину
+        lamps_container = GridLayout(cols=1, spacing=dp(10), size_hint_x=1, size_hint_y=None)
         lamps_container.bind(minimum_height=lamps_container.setter('height'))
 
         icon_pairs = [
@@ -704,22 +703,19 @@ class SmartHomeApp(App):
             lamps_container.add_widget(lamp)
 
         from kivy.uix.scrollview import ScrollView
-        scroll = ScrollView(
-            size_hint=(1, 1),
-            do_scroll_x=False,
-            do_scroll_y=True
-        )
+        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
         scroll.add_widget(lamps_container)
         root_layout.add_widget(scroll)
 
-        # 3. Нижние кнопки с исправленным текстом и размером шрифта 12sp
+        # 5. Нижние кнопки на всю ширину
         btn_all_on = Button(
             text="ВКЛЮЧИТЬ ВСЕ",
-            font_size='12sp',
+            font_size='13sp',
             bold=True,
             background_normal='',
             background_color=(0, 0, 0, 0),
             color=(0.2, 0.85, 0.3, 1),
+            size_hint=(1, 1),
             halign='center',
             valign='middle'
         )
@@ -728,18 +724,19 @@ class SmartHomeApp(App):
 
         btn_all_off = Button(
             text="ВЫКЛЮЧИТЬ ВСЕ",
-            font_size='12sp',
+            font_size='13sp',
             bold=True,
             background_normal='',
             background_color=(0, 0, 0, 0),
             color=(0.9, 0.2, 0.2, 1),
+            size_hint=(1, 1),
             halign='center',
             valign='middle'
         )
         btn_all_off.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
         btn_all_off.bind(on_press=lambda x: self.turn_all_off())
 
-        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_y=None, height=dp(50))
+        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint=(1, None), height=dp(50))
         btn_box.add_widget(btn_all_on)
         btn_box.add_widget(btn_all_off)
         root_layout.add_widget(btn_box)
