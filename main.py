@@ -603,7 +603,8 @@ class SmartHomeApp(App):
 
         root_layout = BoxLayout(
             orientation='vertical',
-            padding=[dp(15), dp(15), dp(15), dp(40)],
+            padding=[dp(15), dp(15), dp(15), dp(10)],
+            # [слева, снизу, справа, сверху] — уменьшайте второе или четвертое значение
             spacing=dp(10)
         )
 
@@ -652,8 +653,8 @@ class SmartHomeApp(App):
         labels_container = BoxLayout(
             orientation='vertical',
             size_hint_y=None,
-            height=dp(60),
-            spacing=dp(2)
+            height=dp(75),
+            spacing=dp(4)
         )
 
         self.temp_label = Label(
@@ -675,7 +676,7 @@ class SmartHomeApp(App):
         labels_container.add_widget(self.assistant_label)
         root_layout.add_widget(labels_container)
 
-        lamps_container = GridLayout(cols=1, spacing=10, size_hint_y=None)
+        lamps_container = GridLayout(cols=1, spacing=dp(10), size_hint_y=None)
         lamps_container.bind(minimum_height=lamps_container.setter('height'))
 
         icon_pairs = [
@@ -694,24 +695,24 @@ class SmartHomeApp(App):
         root_layout.add_widget(lamps_container)
         root_layout.add_widget(Widget())
 
-        btn_box = BoxLayout(orientation='horizontal', spacing=12, size_hint_y=None, height=50)
+        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint_y=None, height=dp(50))
 
         btn_all_on = Button(
             text="ВКЛЮЧИТЬ ВСЕ",
-            font_size='15sp',
+            font_size='14sp',
             bold=True,
             background_normal='',
-            background_color=(0, 0, 0, 0),
+            background_color=(0, 0, 0, 0),  # Полупрозрачный зеленый фон, чтобы кнопка была видна
             color=(0.2, 0.85, 0.3, 1)
         )
         btn_all_on.bind(on_press=lambda x: self.turn_all_on())
 
         btn_all_off = Button(
             text="ВЫКЛЮЧИТЬ ВСЕ",
-            font_size='15sp',
+            font_size='14sp',
             bold=True,
             background_normal='',
-            background_color=(0, 0, 0, 0),
+            background_color=(0, 0, 0, 0),  # Полупрозрачный красный фон
             color=(0.9, 0.2, 0.2, 1)
         )
         btn_all_off.bind(on_press=lambda x: self.turn_all_off())
