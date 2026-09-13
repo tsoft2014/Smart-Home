@@ -352,7 +352,9 @@ class VoiceAssistant:
             self.speech_recognizer = SpeechRecognizer.createSpeechRecognizer(activity)
 
             class AndroidRecognitionListener(PythonJavaClass):
-                __javaclass__ = 'android/speech/RecognitionListener'
+                __javainterfaces__ = ['android/speech/RecognitionListener']
+
+                # ... остальные методы (onResults, onError и т.д.)
 
                 def __init__(self, assistant):
                     super().__init__()
@@ -408,35 +410,37 @@ class VoiceAssistant:
             print(f"[SPEECH RECOGNIZER INIT ERROR]: {e}")
 
     def restart_listening(self):
-        if not self.listening:
+        if platform != 'android' or not self.speech_recognizer:
             return
-        if platform == 'android' and self.speech_recognizer:
+
+        def _do_restart():
             try:
+                # 1. Останавливаем предыдущее прослушивание СТРОГО внутри потока Android
                 try:
                     self.speech_recognizer.stopListening()
                 except Exception:
                     pass
 
+                # 2. Создаем и запускаем новый интент
                 intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
                 intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
 
-                def start_act():
-                    try:
-                        self.speech_recognizer.startListening(intent)
-                    except Exception as e:
-                        print(f"[START LISTENING ERROR]: {e}")
-
-                self.handler.post(PyRunnable(start_act))
-
-                ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
-                if self.is_active:
-                    self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
-                else:
-                    self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+                self.speech_recognizer.startListening(intent)
             except Exception as e:
-                print(f"[SPEECH RECOGNIZER RESTART ERROR]: {e}")
+                print(f"[START LISTENING ERROR]: {e}")
+
+        # Передаем весь цикл остановки/запуска в Handler
+        if hasattr(self, 'handler') and self.handler:
+            self.handler.post(PyRunnable(_do_restart))
+
+        # Обновляем статус в UI
+        ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
+        if getattr(self, 'is_active', False):
+            self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
+        else:
+            self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
 
     def check_activity_timeout(self, dt=None):
         if not self.is_active:
