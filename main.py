@@ -738,25 +738,42 @@ class SmartHomeApp(App):
 
     def load_config(self):
         config_path = self.get_config_path()
+        default_config = {
+            "device_ip": "192.168.1.39",
+            "tts_enabled": True,
+            "wake_word": "джарвис",
+            "wake_response": "Слушаю",
+            "wake_timeout_sec": 120,
+            "channels": [
+                {"id": 4, "name": "Лампу 1"},
+                {"id": 5, "name": "Лампу 2"},
+                {"id": 0, "name": "Лампу 3"}
+            ],
+            "voice_commands": [],
+            "voice_responses": []
+        }
+
         if not os.path.exists(config_path):
-            default_config = {
-                "device_ip": "192.168.1.39",
-                "tts_enabled": True,
-                "wake_word": "джарвис",
-                "wake_response": "Слушаю",
-                "wake_timeout_sec": 120,
-                "channels": [],
-                "voice_commands": [],
-                "voice_responses": []
-            }
             self.save_config(default_config)
             return default_config
 
-        with open(config_path, 'r', encoding='utf-8') as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Проверяем, все ли стандартные ключи есть в загруженном файле, если нет — добавляем
+            updated = False
+            for key, val in default_config.items():
+                if key not in data:
+                    data[key] = val
+                    updated = True
+
+            if updated:
+                self.save_config(data)
+
+            return data
+        except Exception:
+            return default_config
 
     def save_config(self, config_data):
         config_path = self.get_config_path()
