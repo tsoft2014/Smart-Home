@@ -193,20 +193,6 @@ def get_img(filename):
     return os.path.join(base_dir, filename)
 
 
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        save_config(DEFAULT_CONFIG)
-        return DEFAULT_CONFIG
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return DEFAULT_CONFIG
-
-
-def save_config(config_data):
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config_data, f, ensure_ascii=False, indent=4)
 
 
 class RoundedButton(Button):
@@ -598,7 +584,7 @@ class VoiceAssistant:
 class SmartHomeApp(App):
     def build(self):
         self.title = "Управление освещением"
-        self.config_data = load_config()
+        self.config_data = self.load_config()
         self.lamp_objects = []
         self.esp_connected = False
         self.failed_ip_checks = 0
@@ -745,6 +731,41 @@ class SmartHomeApp(App):
         Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
 
         return root_layout
+
+    def get_config_path(self):
+        base_dir = self.user_data_dir if hasattr(self, 'user_data_dir') else os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_dir, "config.json")
+
+    def load_config(self):
+        config_path = self.get_config_path()
+        if not os.path.exists(config_path):
+            default_config = {
+                "device_ip": "192.168.1.39",
+                "tts_enabled": True,
+                "wake_word": "джарвис",
+                "wake_response": "Слушаю",
+                "wake_timeout_sec": 120,
+                "channels": [],
+                "voice_commands": [],
+                "voice_responses": []
+            }
+            self.save_config(default_config)
+            return default_config
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+
+    def save_config(self, config_data):
+        config_path = self.get_config_path()
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=4)
+            print(f"[CONFIG] Настройки сохранены: {config_path}")
+        except Exception as e:
+            print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
 
     def _start_assistant(self):
         Clock.schedule_once(lambda dt: self._init_voice_assistant(), 0.1)
@@ -1215,15 +1236,8 @@ class SmartHomeApp(App):
                     {"sub_action": sub_action, "channel_id": chid, "response_text": resp_inp.text.strip()})
             self.config_data["voice_responses"] = updated_resps
 
-            try:
-                base_dir = self.user_data_dir if hasattr(self, 'user_data_dir') else os.path.dirname(
-                    os.path.abspath(__file__))
-                config_path = os.path.join(base_dir, "config.json")
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(self.config_data, f, ensure_ascii=False, indent=4)
-                print(f"[CONFIG] Настройки успешно сохранены в: {config_path}")
-            except Exception as e:
-                print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
+            # Вызываем метод сохранения класса
+            self.save_config(self.config_data)
 
             popup.dismiss()
 
