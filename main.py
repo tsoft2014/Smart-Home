@@ -1036,6 +1036,26 @@ class SmartHomeApp(App):
 
                         @java_method('(I)V')
                         def onError(self, error):
+                            # Словарь расшифровки кодов ошибок Android SpeechRecognizer
+                            error_messages = {
+                                1: "Network timeout (ERROR_NETWORK_TIMEOUT)",
+                                2: "Network error (ERROR_NETWORK)",
+                                3: "Audio recording error (ERROR_AUDIO)",
+                                4: "Server error (ERROR_SERVER)",
+                                5: "Client side error (ERROR_CLIENT)",
+                                6: "No speech input (ERROR_SPEECH_TIMEOUT)",
+                                7: "No match found (ERROR_NO_MATCH)",
+                                8: "Recognizer busy (ERROR_RECOGNIZER_BUSY)",
+                                9: "Insufficient permissions (ERROR_INSUFFICIENT_PERMISSIONS)"
+                            }
+                            err_desc = error_messages.get(error, f"Unknown error code {error}")
+                            print(f"[SETTING REC ERROR CODE]: {error} -> {err_desc}")
+
+                            # Выводим понятную ошибку в интерфейс статуса
+                            Clock.schedule_once(
+                                lambda dt: self.app_ref.update_assistant_status(f"Ошибка микрофона: {error}",
+                                                                                color=(0.9, 0.2, 0.2, 1)))
+
                             Clock.schedule_once(lambda dt: setattr(self.widget, 'text', self.orig))
                             try:
                                 self.rec_obj.destroy()
