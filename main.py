@@ -413,34 +413,45 @@ class VoiceAssistant:
         if platform != 'android' or not self.speech_recognizer:
             return
 
-        def _do_restart():
-            try:
-                # 1. Останавливаем предыдущее прослушивание СТРОГО внутри потока Android
+        # Создаем класс-раннабл для безопасного выполнения в UI-потоке Android
+        class SafeRunner(PythonJavaClass):
+            __javainterfaces__ = ['java/lang/Runnable']
+
+            def __init__(self, assistant):
+                super().__init__()
+                self.assistant = assistant
+
+            @java_method('()V')
+            def run(self):
                 try:
-                    self.speech_recognizer.stopListening()
-                except Exception:
-                    pass
+                    if self.assistant.speech_recognizer:
+                        try:
+                            self.assistant.speech_recognizer.stopListening()
+                        except Exception:
+                            pass
 
-                # 2. Создаем и запускаем новый интент
-                intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-                intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                        intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+                        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
 
-                self.speech_recognizer.startListening(intent)
-            except Exception as e:
-                print(f"[START LISTENING ERROR]: {e}")
+                        self.assistant.speech_recognizer.startListening(intent)
+                except Exception as e:
+                    print(f"[START LISTENING ERROR]: {e}")
 
-        # Передаем весь цикл остановки/запуска в Handler
-        if hasattr(self, 'handler') and self.handler:
-            self.handler.post(PyRunnable(_do_restart))
+        try:
+            if hasattr(self, 'handler') and self.handler:
+                self.handler.post(SafeRunner(self))
 
-        # Обновляем статус в UI
-        ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
-        if getattr(self, 'is_active', False):
-            self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
-        else:
-            self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+            # Обновление статуса в интерфейсе
+            ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
+            if getattr(self, 'is_active', False):
+                self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
+            else:
+                self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+        except Exception as e:
+            print(f"[SPEECH RECOGNIZER RESTART ERROR]: {e}")
 
     def check_activity_timeout(self, dt=None):
         if not self.is_active:
