@@ -13,7 +13,7 @@ package.domain = org.mysmarthome
 source.dir = .
 
 # (list) Source files to include (let it include json and png/icons)
-source.include_exts = py,png,jpg,kv,json
+source.include_exts = py,png,jpg,kv,json,mdl,fst,txt,int
 
 # (list) List of inclusions using pattern matching
 #source.include_patterns = assets/*,images/*.png
