@@ -24,6 +24,9 @@ source.include_exts = py,png,jpg,kv,json,mdl,fst,txt,int
 # (str) Версия приложения
 version = 1.0.0
 
+# Принимать лицензии SDK автоматически
+android.accept_sdk_license = True
+
 # (list) Application requirements
 # Обратите внимание: sounddevice здесь убран намеренно, так как на Android работает pyjnius.
 # Vosk и pyjnius включены в список.
