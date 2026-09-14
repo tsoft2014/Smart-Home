@@ -21,6 +21,9 @@ source.include_exts = py,png,jpg,kv,json,mdl,fst,txt,int
 # (list) List of exclusions using pattern matching
 #source.exclude_patterns = license,images/*.jpg
 
+# (str) Версия приложения
+version = 1.0.0
+
 # (list) Application requirements
 # Обратите внимание: sounddevice здесь убран намеренно, так как на Android работает pyjnius.
 # Vosk и pyjnius включены в список.
