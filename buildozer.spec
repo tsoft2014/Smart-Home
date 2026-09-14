@@ -64,3 +64,6 @@ warn_root = 1
 
 # (str) Path to build artifact
 bin_dir = ./bin
+
+# (str) python-for-android git clone to use or branch
+p4a.branch = master
