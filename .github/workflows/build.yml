@@ -20,7 +20,7 @@ jobs:
           docker run --rm \
             --volume "${{ github.workspace }}:/home/user/hostcwd" \
             ghcr.io/kivy/buildozer:latest \
-            bash -c "buildozer android debug"
+            android debug
 
       - name: Fix APK permissions
         run: |
