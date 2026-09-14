@@ -66,4 +66,4 @@ warn_root = 1
 bin_dir = ./bin
 
 # (str) python-for-android git clone to use or branch
-p4a.branch = master
+p4a.branch = v2024.01.21
