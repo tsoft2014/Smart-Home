@@ -27,7 +27,7 @@ version = 1.0.0
 # (list) Application requirements
 # Обратите внимание: sounddevice здесь убран намеренно, так как на Android работает pyjnius.
 # Vosk и pyjnius включены в список.
-requirements = python3,kivy,pyjnius,requests,vosk
+requirements = python3, kivy, pyjnius, requests, srt, websockets, vosk
 
 # (str) Custom source folders for requirements
 #requirements.source.dir = ../lib/kivy
