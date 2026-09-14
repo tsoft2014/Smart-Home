@@ -70,3 +70,6 @@ bin_dir = ./bin
 
 # (str) python-for-android git clone to use or branch
 p4a.branch = v2024.01.21
+
+# Принудительно указываем использовать системный Python 3.11 для сборщика
+hostpython = /opt/hostedtoolcache/Python/3.11.16/x64/bin/python3
