@@ -193,6 +193,8 @@ def get_img(filename):
     return os.path.join(base_dir, filename)
 
 
+
+
 class RoundedButton(Button):
     def __init__(self, bg_color=(0.18, 0.55, 0.22, 1), radius=[8], **kwargs):
         super().__init__(**kwargs)
@@ -323,19 +325,18 @@ class VoiceAssistant:
             self.handler = Handler(Looper.getMainLooper())
 
     def speak(self, text):
-        def restore_status():
-            if self.is_active:
-                self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
-            else:
-                ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
-                self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
-            self.restart_listening()
-
         if text and self.app.config_data.get("tts_enabled", True):
             self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
+
+            def restore_status():
+                if self.is_active:
+                    self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
+                else:
+                    ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
+                    self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+                self.restart_listening()
+
             speak(text, on_done_callback=restore_status)
-        else:
-            restore_status()
 
     def start_listening(self):
         self.listening = True
@@ -352,6 +353,8 @@ class VoiceAssistant:
 
             class AndroidRecognitionListener(PythonJavaClass):
                 __javainterfaces__ = ['android/speech/RecognitionListener']
+
+                # ... остальные методы (onResults, onError и т.д.)
 
                 def __init__(self, assistant):
                     super().__init__()
@@ -410,6 +413,7 @@ class VoiceAssistant:
         if platform != 'android' or not self.speech_recognizer:
             return
 
+        # Создаем класс-раннабл для безопасного выполнения в UI-потоке Android
         class SafeRunner(PythonJavaClass):
             __javainterfaces__ = ['java/lang/Runnable']
 
@@ -423,7 +427,6 @@ class VoiceAssistant:
                     if self.assistant.speech_recognizer:
                         try:
                             self.assistant.speech_recognizer.stopListening()
-                            self.assistant.speech_recognizer.cancel()
                         except Exception:
                             pass
 
@@ -441,6 +444,7 @@ class VoiceAssistant:
             if hasattr(self, 'handler') and self.handler:
                 self.handler.post(SafeRunner(self))
 
+            # Обновление статуса в интерфейсе
             ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
             if getattr(self, 'is_active', False):
                 self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
@@ -772,6 +776,7 @@ class SmartHomeApp(App):
             with open(config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
+            # Проверяем, все ли стандартные ключи есть в загруженном файле, если нет — добавляем
             updated = False
             for key, val in default_config.items():
                 if key not in data:
@@ -898,7 +903,7 @@ class SmartHomeApp(App):
                         speech_text = format_temperature_speech(current_temp)
                         self._set_temp_text(f"Температура: {current_temp:.1f} °C")
 
-                        if speak_result:
+                        if speak_result and self.config_data.get("tts_enabled", True):
                             if hasattr(self, 'assistant') and self.assistant:
                                 self.assistant.speak(speech_text)
             except Exception as e:
@@ -1046,6 +1051,7 @@ class SmartHomeApp(App):
 
                         @java_method('(I)V')
                         def onError(self, error):
+                            # Словарь расшифровки кодов ошибок Android SpeechRecognizer
                             error_messages = {
                                 1: "Network timeout (ERROR_NETWORK_TIMEOUT)",
                                 2: "Network error (ERROR_NETWORK)",
@@ -1060,6 +1066,7 @@ class SmartHomeApp(App):
                             err_desc = error_messages.get(error, f"Unknown error code {error}")
                             print(f"[SETTING REC ERROR CODE]: {error} -> {err_desc}")
 
+                            # Выводим понятную ошибку в интерфейс статуса
                             Clock.schedule_once(
                                 lambda dt: self.app_ref.update_assistant_status(f"Ошибка микрофона: {error}",
                                                                                 color=(0.9, 0.2, 0.2, 1)))
@@ -1281,7 +1288,9 @@ class SmartHomeApp(App):
                     {"sub_action": sub_action, "channel_id": chid, "response_text": resp_inp.text.strip()})
             self.config_data["voice_responses"] = updated_resps
 
+            # Вызываем метод сохранения класса
             self.save_config(self.config_data)
+
             popup.dismiss()
 
         btn_save.bind(on_press=save_settings_data)
