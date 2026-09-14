@@ -23,7 +23,7 @@ android.accept_sdk_license = True
 
 # (list) Application requirements
 # Оставляем чистые требования без жесткой привязки к минорным версиям, чтобы не ломать pip внутри сборщика
-requirements = python3, kivy, pyjnius, requests, srt, websockets, vosk
+requirements = python3, kivy, pyjnius, requests, websockets, vosk
 
 # Указываем версию Python для p4a
 p4a.python_version = 3.11
