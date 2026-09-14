@@ -15,12 +15,6 @@ source.dir = .
 # (list) Source files to include (let it include json and png/icons)
 source.include_exts = py,png,jpg,kv,json,mdl,fst,txt,int
 
-# (list) List of inclusions using pattern matching
-#source.include_patterns = assets/*,images/*.png
-
-# (list) List of exclusions using pattern matching
-#source.exclude_patterns = license,images/*.jpg
-
 # (str) Версия приложения
 version = 1.0.0
 
@@ -28,15 +22,10 @@ version = 1.0.0
 android.accept_sdk_license = True
 
 # (list) Application requirements
-# Обратите внимание: sounddevice здесь убран намеренно, так как на Android работает pyjnius.
-# Vosk и pyjnius включены в список.
-requirements = python3, kivy, pyjnius, requests, srt, websockets, vosk
+requirements = python3==3.11.16, hostpython3==3.11.16, kivy, pyjnius, requests, srt, websockets, vosk
 
-# (str) Custom source folders for requirements
-#requirements.source.dir = ../lib/kivy
-
-# Принудительно задаем версию Python для Android-окружения
-android.python_version = 3.11
+# Указываем версию Python для p4a
+p4a.python_version = 3.11
 
 # (list) Permissions
 android.permissions = INTERNET,RECORD_AUDIO
@@ -71,8 +60,5 @@ warn_root = 1
 # (str) Path to build artifact
 bin_dir = ./bin
 
-# (str) python-for-android git clone to use or branch
-p4a.branch = v2024.01.21
-
-# Принудительно указываем использовать системный Python 3.11 для сборщика
-hostpython = /opt/hostedtoolcache/Python/3.11.16/x64/bin/python3
+# Переходим на актуальную ветку p4a, которая корректно поддерживает Python 3.11
+p4a.branch = master
