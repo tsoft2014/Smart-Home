@@ -61,14 +61,6 @@ jobs:
         run: |
           rm -rf .buildozer
           rm -rf ~/.buildozer
-          
-      - name: Download Vosk Model
-        run: |
-          mkdir -p model
-          wget https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip -O model.zip
-          unzip -q model.zip -d model/
-          mv model/vosk-model-small-ru-0.22 model/vosk-model-small-ru-0.22
-          rm model.zip    
 
       - name: Build APK with Buildozer
         run: |
