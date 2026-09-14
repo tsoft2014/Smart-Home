@@ -22,7 +22,8 @@ version = 1.0.0
 android.accept_sdk_license = True
 
 # (list) Application requirements
-requirements = python3==3.11.16, hostpython3==3.11.16, kivy, pyjnius, requests, srt, websockets, vosk
+# Оставляем чистые требования без жесткой привязки к минорным версиям, чтобы не ломать pip внутри сборщика
+requirements = python3, kivy, pyjnius, requests, srt, websockets, vosk
 
 # Указываем версию Python для p4a
 p4a.python_version = 3.11
@@ -60,5 +61,5 @@ warn_root = 1
 # (str) Path to build artifact
 bin_dir = ./bin
 
-# Переходим на актуальную ветку p4a, которая корректно поддерживает Python 3.11
+# Переходим на актуальную ветку p4a, которая поддерживает Python 3.11 и современные рецепты
 p4a.branch = master
