@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK via Docker
 
 on:
   push:
@@ -15,66 +15,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      # Этот шаг поднимает официальный контейнер Buildozer, 
+      # где изолированно настроены и Java, и правильный Python, и все SDK/NDK
+      - name: Build with Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        id: buildozer
         with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Force System Python 3.11 Default
-        run: |
-          sudo update-alternatives --install /usr/bin/python3 python3 /opt/hostedtoolcache/Python/3.11.16/x64/bin/python3 1
-          sudo update-alternatives --set python3 /opt/hostedtoolcache/Python/3.11.16/x64/bin/python3
-          python3 --version
-          pip --version
-
-      - name: Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            zip \
-            unzip \
-            openjdk-17-jdk \
-            python3-pip \
-            autotools-dev \
-            autoconf \
-            libtool \
-            pkg-config \
-            cmake \
-            ninja-build \
-            libssl-dev \
-            libffi-dev \
-            libltdl-dev \
-            libncurses5 \
-            libstdc++6 \
-            zlib1g
-          python3 -m pip install --upgrade "pip<24.0" "setuptools<69.0.0"
-          python3 -m pip install "buildozer==1.5.0" "cython==0.29.36"
-
-      - name: Clean Broken Buildozer Cache
-        run: |
-          rm -rf .buildozer
-          rm -rf ~/.buildozer
-
-      - name: Build APK with Buildozer
-        run: |
-          yes | buildozer android debug
+          command: buildozer android debug
+          buildozer_version: 1.5.0
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SmartHome-Debug-APK
-          path: bin/*.apk
+          path: ${{ steps.buildozer.outputs.filename }}
