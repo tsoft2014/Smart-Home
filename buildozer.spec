@@ -32,6 +32,9 @@ requirements = python3, kivy, pyjnius, requests, srt, websockets, vosk
 # (str) Custom source folders for requirements
 #requirements.source.dir = ../lib/kivy
 
+# Принудительно задаем версию Python для Android-окружения
+android.python_version = 3.11
+
 # (list) Permissions
 android.permissions = INTERNET,RECORD_AUDIO
 
