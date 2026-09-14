@@ -1,4 +1,4 @@
-name: Build Android APK via Docker
+name: Build Android APK via Official Docker
 
 on:
   push:
@@ -15,17 +15,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Этот шаг поднимает официальный контейнер Buildozer, 
-      # где изолированно настроены и Java, и правильный Python, и все SDK/NDK
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: 1.5.0
+      - name: Build APK using official Kivy Buildozer container
+        run: |
+          docker run --rm \
+            --volume "${{ github.workspace }}:/home/user/hostcwd" \
+            ghcr.io/kivy/buildozer:latest \
+            bash -c "buildozer android debug"
+
+      - name: Fix APK permissions
+        run: |
+          sudo chown -R $USER:$USER bin/
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SmartHome-Debug-APK
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: bin/*.apk
