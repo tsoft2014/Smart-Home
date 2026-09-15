@@ -56,6 +56,6 @@ log_level = 2
 warn_root = 1
 bin_dir = ./bin
 
-# Обязательно уходим с master-ветки на стабильный релиз p4a
-p4a.branch = release-2024.09
+# Прямое указание стабильного архива python-for-android (обход любых багов бранчей)
+p4a.url = https://github.com/kivy/python-for-android/archive/refs/tags/v2024.09.0.zip
 p4a.bootstrap = sdl2
