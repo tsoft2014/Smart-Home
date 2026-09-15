@@ -52,15 +52,10 @@ android.presplash_color = #1c1c1c
 
 [buildozer]
 
-# (int) Log level (0 = error, 1 = info, 2 = debug)
 log_level = 2
-
-# (int) Display warning if buildozer is run as root
 warn_root = 1
-
-# (str) Path to build artifact
 bin_dir = ./bin
 
-# Уходим с проблемного master и жестко берем стабильный релиз p4a, совместимый с Python 3.11
-p4a.branch = v2024.09.0
+# Обязательно уходим с master-ветки на стабильный релиз p4a
+p4a.branch = release-2024.09
 p4a.bootstrap = sdl2
