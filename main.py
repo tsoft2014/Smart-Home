@@ -658,9 +658,9 @@ class SmartHomeApp(App):
 
         labels_container = BoxLayout(
             orientation='vertical',
-            size_hint_y=None,
-            height=dp(60),
-            spacing=dp(2)
+            size_hint=(1, None),
+            height=dp(85),
+            spacing=dp(4)
         )
 
         self.temp_label = Label(
@@ -668,21 +668,27 @@ class SmartHomeApp(App):
             font_size='20sp',
             bold=True,
             color=(1, 1, 1, 1),
-            halign='center'
+            size_hint=(1, 1),
+            halign='center',
+            valign='middle'
         )
+        self.temp_label.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
 
         self.assistant_label = Label(
             text="Ассистент: Инициализация...",
             font_size='13sp',
             color=(0.6, 0.6, 0.6, 1),
-            halign='center'
+            size_hint=(1, 1),
+            halign='center',
+            valign='middle'
         )
+        self.assistant_label.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
 
         labels_container.add_widget(self.temp_label)
         labels_container.add_widget(self.assistant_label)
         root_layout.add_widget(labels_container)
 
-        lamps_container = GridLayout(cols=1, spacing=10, size_hint_y=None)
+        lamps_container = GridLayout(cols=1, spacing=dp(10), size_hint_x=1, size_hint_y=None)
         lamps_container.bind(minimum_height=lamps_container.setter('height'))
 
         icon_pairs = [
@@ -693,40 +699,48 @@ class SmartHomeApp(App):
 
         for idx, ch in enumerate(self.config_data.get("channels", [])):
             off_img, on_img = icon_pairs[idx] if idx < len(icon_pairs) else (IMG_LAMP_1_OFF, IMG_LAMP_1_ON)
-            lamp = LampRow(ch["id"], off_img, on_img, lambda: f"http://{self.config_data.get('device_ip')}", app_ref=self)
+            lamp = LampRow(ch["id"], off_img, on_img, lambda: f"http://{self.config_data.get('device_ip')}",
+                           app_ref=self)
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-        root_layout.add_widget(lamps_container)
-        root_layout.add_widget(Widget())
-
-        btn_box = BoxLayout(orientation='horizontal', spacing=12, size_hint_y=None, height=50)
+        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
+        scroll.add_widget(lamps_container)
+        root_layout.add_widget(scroll)
 
         btn_all_on = Button(
             text="ВКЛЮЧИТЬ ВСЕ",
-            font_size='15sp',
+            font_size='13sp',
             bold=True,
             background_normal='',
             background_color=(0, 0, 0, 0),
-            color=(0.2, 0.85, 0.3, 1)
+            color=(0.2, 0.85, 0.3, 1),
+            size_hint=(1, 1),
+            halign='center',
+            valign='middle'
         )
+        btn_all_on.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
         btn_all_on.bind(on_press=lambda x: self.turn_all_on())
 
         btn_all_off = Button(
             text="ВЫКЛЮЧИТЬ ВСЕ",
-            font_size='15sp',
+            font_size='13sp',
             bold=True,
             background_normal='',
             background_color=(0, 0, 0, 0),
-            color=(0.9, 0.2, 0.2, 1)
+            color=(0.9, 0.2, 0.2, 1),
+            size_hint=(1, 1),
+            halign='center',
+            valign='middle'
         )
+        btn_all_off.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
         btn_all_off.bind(on_press=lambda x: self.turn_all_off())
 
+        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint=(1, None), height=dp(50))
         btn_box.add_widget(btn_all_on)
         btn_box.add_widget(btn_all_off)
         root_layout.add_widget(btn_box)
 
-        # Запрос разрешений и запуск микрофона
         self.request_android_permissions(on_granted=self._start_assistant)
 
         Clock.schedule_once(lambda dt: self.poll_statuses(None), 0.5)
