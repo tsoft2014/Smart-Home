@@ -31,7 +31,7 @@ jobs:
       - name: Install Buildozer and Cython
         run: |
           pip install --upgrade pip setuptools wheel
-          pip install buildozer==1.50.0 cython==3.0.11
+          pip install buildozer==1.6.0 cython==3.0.11
           
       - name: Run Buildozer
         env:
