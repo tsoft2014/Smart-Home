@@ -1,61 +1,64 @@
 [app]
 
-# (str) Title of your application
-title = Smart Home Assistant
+# (str) Название приложения на экране смартфона
+title = Управление освещением
 
-# (str) Package name
+# (str) Имя пакета (латиницей, без пробелов)
 package.name = smarthome
 
-# (str) Package domain (needed for android packaging)
-package.domain = org.mysmarthome
+# (str) Домен организации (обратный домен)
+package.domain = org.smarthome
 
-# (str) Source files where the relevent code is (relative to directory of spec)
+# (str) Директория с исходным кодом
 source.dir = .
 
-# (list) Source files to include
-source.include_exts = py,png,jpg,kv,json,mdl,fst,txt,int
+# (list) Расширения файлов для включения в APK
+source.include_exts = py,png,jpg,kv,atlas,json
 
 # (str) Версия приложения
 version = 1.0.0
 
-# Принимать лицензии SDK автоматически
-android.accept_sdk_license = True
+# (list) Зависимости проекта (без vosk для проверки чистой сборки)
+requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius
 
-# (list) Application requirements
-# Фиксируем совместимые версии библиотек, исключая попытки скачать битые сборки под Python 3.14
-requirements = python3, kivy==2.3.0, pyjnius, requests, websockets, vosk
+# (str) Ориентация экрана
+orientation = portrait
 
-# Жестко задаем рабочую версию Python для p4a
-p4a.python_version = 3.11
+# (bool) Показывать статус-бар телефона (0 - показывать)
+fullscreen = 0
 
-# (list) Permissions
-android.permissions = INTERNET,RECORD_AUDIO
+# --- Настройки Android ---
 
-# (list) Target architectures
-android.archs = arm64-v8a,armeabi-v7a
+# (list) Разрешения Android для работы сети и микрофона
+android.permissions = INTERNET, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
 
 # (int) Target Android API
 android.api = 33
 
-# (int) Minimum API your APK will support
+# (int) Минимальная поддерживаемая версия Android API
 android.minapi = 21
 
-# (str) Supported orientations
-orientation = portrait
+# (list) Поддерживаемые архитектуры процессоров
+android.archs = arm64-v8a, armeabi-v7a
 
-# (bool) Indicate if the application should be fullscreen or not
-fullscreen = 0
+# (bool) Запрашивать разрешения при запуске приложения
+android.grant_permissions = True
 
-# (string) Presplash background color
-android.presplash_color = #1c1c1c
+# (bool) Разрешить резервное копирование
+android.allow_backup = True
+
+# (str) Тема приложения
+android.theme = @android:style/Theme.NoTitleBar
+
+# --- Настройки python-for-android (Ваша проверенная рабочая фиксация) ---
+p4a.fork = kivy
+p4a.branch = v2024.01.21
 
 
 [buildozer]
 
+# (int) Уровень логов (2 = подробный вывод)
 log_level = 2
-warn_root = 1
-bin_dir = ./bin
 
-# Прямое указание стабильного архива python-for-android (обход любых багов бранчей)
-p4a.url = https://github.com/kivy/python-for-android/archive/refs/tags/v2024.09.0.zip
-p4a.bootstrap = sdl2
+# (int) Предупреждение при запуске от root
+warn_on_root = 1
