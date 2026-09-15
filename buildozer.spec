@@ -19,7 +19,7 @@ source.include_exts = py,png,jpg,kv,atlas,json
 version = 1.0.0
 
 # (list) Зависимости проекта
-requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius
+requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk
 
 # (str) Ориентация экрана
 orientation = portrait
