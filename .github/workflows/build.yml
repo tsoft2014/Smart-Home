@@ -22,9 +22,10 @@ jobs:
       - name: Build APK using official Kivy Buildozer container
         run: |
           docker run --rm \
+            --entrypoint bash \
             --volume "${{ github.workspace }}:/home/user/hostcwd" \
             ghcr.io/kivy/buildozer:latest \
-            bash -c "pip install --upgrade pip setuptools && buildozer android debug"
+            -c "pip install --upgrade pip setuptools && buildozer android debug"
 
       - name: Fix APK permissions
         if: always()
