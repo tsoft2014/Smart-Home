@@ -15,29 +15,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Кэшируем папку .buildozer, чтобы SDK, NDK и gradle не скачивались заново при каждом коммите
+      - name: Set up Buildozer cache directory
+        run: mkdir -p .buildozer
+
+      # Кэшируем системную папку .buildozer, где хранятся SDK, NDK и загруженные рецепты
       - name: Cache Buildozer global directory
         uses: actions/cache@v4
         with:
-          path: .buildozer_cache
-          key: buildozer-sdk-${{ hashFiles('buildozer.spec') }}
+          path: .buildozer
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-sdk-
-
-      - name: Prepare buildozer cache directory
-        run: mkdir -p .buildozer_cache
+            buildozer-
 
       - name: Build APK using official Kivy Buildozer container
         run: |
           docker run --rm \
             --volume "${{ github.workspace }}:/home/user/hostcwd" \
-            --volume "${{ github.workspace }}/.buildozer_cache:/home/user/.buildozer" \
             ghcr.io/kivy/buildozer:latest \
             android debug
 
       - name: Fix APK and cache permissions
+        if: always()
         run: |
-          sudo chown -R $USER:$USER bin/ .buildozer_cache/
+          sudo chown -R $USER:$USER bin/ .buildozer/
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
