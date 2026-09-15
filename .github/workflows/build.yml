@@ -1,4 +1,4 @@
-name: Build Android APK on Host (Python 3.11)
+name: Build Android APK (Custom Environment)
 
 on:
   push:
@@ -15,29 +15,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install system dependencies
+      - name: Clean previous build artifacts
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git zip unzip openjdk-17-jdk python3-pip autoconf \
-            libtool pkg-config zlib1g-dev libncurses5-dev \
-            libncursesw5-dev libffi-dev libssl-dev cmake
+          rm -rf .buildozer bin
 
-      - name: Install Buildozer and Cython
+      - name: Build custom Docker image
         run: |
-          pip install --upgrade pip
-          pip install --upgrade buildozer cython==3.0.11
+          docker build -t my-buildozer-env .
 
-      - name: Build APK with Buildozer
-        env:
-          BUILDOZER_ALLOW_ROOT: 1
+      - name: Run buildozer inside custom container
         run: |
-          buildozer android debug
+          docker run --rm \
+            --volume "${{ github.workspace }}:/home/user/hostcwd" \
+            -e BUILDOZER_ALLOW_ROOT=1 \
+            my-buildozer-env \
+            buildozer android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
