@@ -19,11 +19,11 @@ jobs:
         run: |
           rm -rf .buildozer bin
 
-      - name: Build APK using official Kivy Buildozer stable container
+      - name: Build APK using official Kivy Buildozer container
         run: |
           docker run --rm \
             --volume "${{ github.workspace }}:/home/user/hostcwd" \
-            ghcr.io/kivy/buildozer:stable \
+            ghcr.io/kivy/buildozer:latest \
             android debug
 
       - name: Fix APK permissions
