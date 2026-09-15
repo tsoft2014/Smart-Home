@@ -15,29 +15,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Buildozer cache directory
-        run: mkdir -p .buildozer
+      - name: Clean previous build artifacts
+        run: |
+          rm -rf .buildozer bin
 
-      # Кэшируем системную папку .buildozer, где хранятся SDK, NDK и загруженные рецепты
-      - name: Cache Buildozer global directory
-        uses: actions/cache@v4
-        with:
-          path: .buildozer
-          key: buildozer-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-
-
-      - name: Build APK using official Kivy Buildozer container
+      - name: Build APK using official Kivy Buildozer stable container
         run: |
           docker run --rm \
             --volume "${{ github.workspace }}:/home/user/hostcwd" \
-            ghcr.io/kivy/buildozer:latest \
+            ghcr.io/kivy/buildozer:stable \
             android debug
 
-      - name: Fix APK and cache permissions
+      - name: Fix APK permissions
         if: always()
         run: |
-          sudo chown -R $USER:$USER bin/ .buildozer/
+          sudo chown -R $USER:$USER bin/ || true
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
