@@ -1,63 +1,63 @@
 [app]
 
-# (str) Title of your application
-title = Smart Home Assistant
+# (str) Название приложения на экране смартфона
+title = Управление освещением
 
-# (str) Package name
+# (str) Имя пакета (латиницей, без пробелов)
 package.name = smarthome
 
-# (str) Package domain (needed for android packaging)
-package.domain = org.mysmarthome
+# (str) Домен организации (обратный домен)
+package.domain = org.smarthome
 
-# (str) Source files where the relevent code is (relative to directory of spec)
+# (str) Директория с исходным кодом
 source.dir = .
 
-# (list) Source files to include (let it include json and png/icons)
-source.include_exts = py,png,jpg,kv,json
+# (list) Расширения файлов для включения в APK (включая иконки и json-конфиг)
+source.include_exts = py,png,jpg,kv,atlas,json
 
-# (list) List of inclusions using pattern matching
-#source.include_patterns = assets/*,images/*.png
+# (str) Версия приложения
+version = 1.0.0
 
-# (list) List of exclusions using pattern matching
-#source.exclude_patterns = license,images/*.jpg
+# (list) Зависимости проекта
+requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius
 
-# (list) Application requirements
-# Обратите внимание: sounddevice здесь убран намеренно, так как на Android работает pyjnius.
-# Vosk и pyjnius включены в список.
-requirements = python3,kivy,pyjnius,requests,vosk
-
-# (str) Custom source folders for requirements
-#requirements.source.dir = ../lib/kivy
-
-# (list) Permissions
-android.permissions = INTERNET,RECORD_AUDIO
-
-# (list) Target architectures
-android.archs = arm64-v8a,armeabi-v7a
-
-# (int) Target Android API, should be as high as possible.
-android.api = 33
-
-# (int) Minimum API your APK will support.
-android.minapi = 21
-
-# (str) Supported orientations
+# (str) Ориентация экрана
 orientation = portrait
 
-# (bool) Indicate if the application should be fullscreen or not
+# (bool) Показывать статус-бар телефона (0 - показывать)
 fullscreen = 0
 
-# (string) Presplash background color
-android.presplash_color = #1c1c1c
+# --- Настройки Android ---
+
+# (list) Разрешения Android для работы сети и микрофона
+android.permissions = INTERNET, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
+# (int) Target Android API
+android.api = 33
+
+# (int) Минимальная поддерживаемая версия Android API (Android 5.0+)
+android.minapi = 21
+
+# (list) Поддерживаемые архитектуры процессоров
+android.archs = arm64-v8a, armeabi-v7a
+
+# (bool) Запрашивать разрешения при запуске приложения
+android.grant_permissions = True
+
+# (bool) Разрешить резервное копирование
+android.allow_backup = True
+
+# (str) Тема приложения
+android.theme = @android:style/Theme.NoTitleBar
+
+# --- Настройки python-for-android (Фиксация стабильной версии) ---
+p4a.fork = kivy
+p4a.branch = v2024.01.21
 
 
 [buildozer]
 
-# (int) Log level (0 = error, 1 = info, 2 = debug (with command output))
+# (int) Уровень логов (2 = подробный вывод)
 log_level = 2
 
-# (int) Display warning if buildozer is run as root (0 = False, 1 = True)
-warn_root = 1
-
-# (str) Path to build artifact
-bin_dir = ./bin
+# (int) Предупреждение при запуске от root
+warn_on_root = 1
