@@ -22,10 +22,10 @@ version = 1.0.0
 android.accept_sdk_license = True
 
 # (list) Application requirements
-# Без точных версий (==), чтобы p4a собирал их самостоятельно через рецепты
-requirements = python3, kivy, pyjnius, requests, websockets, vosk
+# Фиксируем совместимые версии библиотек, исключая попытки скачать битые сборки под Python 3.14
+requirements = python3, kivy==2.3.0, pyjnius, requests, websockets, vosk
 
-# Принудительно задаем рабочую версию Python для p4a (обход багов Python 3.14)
+# Жестко задаем рабочую версию Python для p4a
 p4a.python_version = 3.11
 
 # (list) Permissions
@@ -61,6 +61,6 @@ warn_root = 1
 # (str) Path to build artifact
 bin_dir = ./bin
 
-# Актуальная ветка python-for-android
-p4a.branch = master
+# Уходим с проблемного master и жестко берем стабильный релиз p4a, совместимый с Python 3.11
+p4a.branch = v2024.09.0
 p4a.bootstrap = sdl2
