@@ -22,15 +22,10 @@ jobs:
       - name: Build APK using official Kivy Buildozer container
         run: |
           docker run --rm \
-            --entrypoint bash \
+            -u 1000:1000 \
             --volume "${{ github.workspace }}:/home/user/hostcwd" \
             ghcr.io/kivy/buildozer:latest \
-            -c "pip install --upgrade pip setuptools && buildozer android debug"
-
-      - name: Fix APK permissions
-        if: always()
-        run: |
-          sudo chown -R $USER:$USER bin/ || true
+            android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
