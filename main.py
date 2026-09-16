@@ -8,8 +8,8 @@ import requests
 
 from kivy.config import Config
 
-Config.set('graphics', 'width', '380')
-Config.set('graphics', 'height', '520')
+Config.set('graphics', 'width', '400')
+Config.set('graphics', 'height', '700')
 
 from kivy.app import App
 from kivy.clock import Clock, mainthread
