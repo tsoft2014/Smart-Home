@@ -863,9 +863,23 @@ class SmartHomeApp(App):
         self.fetch_temperature()
 
     def open_settings(self):
-        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
-        content = GridLayout(cols=1, spacing=dp(10), size_hint_y=None, padding=[dp(12), dp(10), dp(12), dp(10)])
+        # 1. Создаем контент сетки с правильным биндингом высоты для скролла
+        content = GridLayout(
+            cols=1,
+            spacing=dp(10),
+            size_hint_x=1,
+            size_hint_y=None,
+            padding=[dp(12), dp(10), dp(12), dp(10)]
+        )
         content.bind(minimum_height=content.setter('height'))
+
+        # 2. Создаем скролл и добавляем туда контент ровно ОДИН раз
+        scroll = ScrollView(
+            size_hint=(1, 1),
+            do_scroll_x=False,
+            do_scroll_y=True
+        )
+        scroll.add_widget(content)
 
         def create_section_header(text):
             lbl = Label(
@@ -886,12 +900,11 @@ class SmartHomeApp(App):
                 text=str(text),
                 multiline=multiline,
                 size_hint_y=None,
+                height=dp(40),
                 font_size=font_size,
                 input_filter=input_filter,
                 padding=[dp(8), dp(8), dp(8), dp(8)]
             )
-            inp.bind(minimum_height=lambda inst, val: setattr(inst, 'height', max(dp(40), inst.minimum_height)))
-            inp.height = max(dp(40), inp.minimum_height)
             return inp
 
         def create_mic_button(on_press_callback):
@@ -920,7 +933,7 @@ class SmartHomeApp(App):
             btn.bind(on_press=on_press_callback)
             return btn
 
-        def create_setting_row(label_text, input_widget, mic_btn=None, is_flexible_input=True):
+        def create_setting_row(label_text, input_widget, mic_btn=None):
             row = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(44), spacing=dp(8))
             lbl = Label(
                 text=label_text,
@@ -933,8 +946,7 @@ class SmartHomeApp(App):
             lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
             row.add_widget(lbl)
 
-            if is_flexible_input:
-                input_widget.size_hint_x = 0.55
+            input_widget.size_hint_x = 0.55
             row.add_widget(input_widget)
 
             if mic_btn:
@@ -942,8 +954,6 @@ class SmartHomeApp(App):
             else:
                 row.add_widget(Widget(size_hint=(None, None), size=(dp(36), dp(36))))
 
-            input_widget.bind(height=lambda inst, val, r=row: setattr(r, 'height', max(dp(44), val)))
-            row.height = max(dp(44), input_widget.height)
             return row
 
         def record_to_entry(entry_widget):
@@ -1001,6 +1011,7 @@ class SmartHomeApp(App):
 
             threading.Thread(target=listen_thread, daemon=True).start()
 
+        # Наполнение формы
         content.add_widget(create_section_header("Общие настройки"))
         ip_input = create_auto_input(self.config_data.get("device_ip", "192.168.1.39"), multiline=False)
         content.add_widget(create_setting_row("IP-адрес:", ip_input))
@@ -1040,7 +1051,8 @@ class SmartHomeApp(App):
         btn_rec_wr = create_mic_button(lambda x: record_to_entry(wake_response_entry))
         content.add_widget(create_setting_row("2. Ответ активации:", wake_response_entry, btn_rec_wr))
 
-        wake_timeout_entry = create_auto_input(self.config_data.get("wake_timeout_sec", 120), input_filter='int', multiline=False)
+        wake_timeout_entry = create_auto_input(self.config_data.get("wake_timeout_sec", 120), input_filter='int',
+                                               multiline=False)
         content.add_widget(create_setting_row("3. Время активности (сек):", wake_timeout_entry))
 
         content.add_widget(create_section_header("Блок 1: Фразы вызова (Команды)"))
@@ -1098,40 +1110,22 @@ class SmartHomeApp(App):
             content.add_widget(create_setting_row(f"{item['label']}:", inp, btn_mic))
             resp_entries[(item["sub_action"], item["chid"])] = inp
 
-        scroll.add_widget(content)
-
+        # Сборка интерфейса попапа
         popup_layout = BoxLayout(orientation='vertical', padding=[dp(10), dp(10), dp(10), dp(10)], spacing=dp(10))
         popup_layout.add_widget(scroll)
 
-        btn_box = BoxLayout(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(40),
-            spacing=dp(10)
-        )
-
+        btn_box = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(40), spacing=dp(10))
         btn_box.add_widget(Widget())
 
         btn_save = RoundedButton(
-            text='Сохранить',
-            font_size='12sp',
-            bold=True,
-            size_hint=(None, None),
-            size=(dp(100), dp(32)),
-            bg_color=(0, 0, 0, 0),
-            radius=[dp(10)],
-            color=(0.2, 0.85, 0.3, 1)
+            text='Сохранить', font_size='12sp', bold=True,
+            size_hint=(None, None), size=(dp(100), dp(32)),
+            bg_color=(0, 0, 0, 0), radius=[dp(10)], color=(0.2, 0.85, 0.3, 1)
         )
-
         btn_cancel = RoundedButton(
-            text='Отмена',
-            font_size='12sp',
-            bold=True,
-            size_hint=(None, None),
-            size=(dp(100), dp(32)),
-            bg_color=(0, 0, 0, 0),
-            radius=[dp(10)],
-            color=(0.9, 0.2, 0.2, 1)
+            text='Отмена', font_size='12sp', bold=True,
+            size_hint=(None, None), size=(dp(100), dp(32)),
+            bg_color=(0, 0, 0, 0), radius=[dp(10)], color=(0.9, 0.2, 0.2, 1)
         )
 
         def save_settings_data(instance):
@@ -1151,7 +1145,8 @@ class SmartHomeApp(App):
 
             updated_resps = []
             for (sub_action, chid), resp_inp in resp_entries.items():
-                updated_resps.append({"sub_action": sub_action, "channel_id": chid, "response_text": resp_inp.text.strip()})
+                updated_resps.append(
+                    {"sub_action": sub_action, "channel_id": chid, "response_text": resp_inp.text.strip()})
             self.config_data["voice_responses"] = updated_resps
 
             try:
