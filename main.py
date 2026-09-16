@@ -325,13 +325,17 @@ class LampRow(BoxLayout):
 
         threading.Thread(target=req, daemon=True).start()
 
+# Убедитесь, что эти импорты и переменные (HAS_VOSK, HAS_SOUNDDEVICE, HAS_ANDROID_AUDIO, speak и т.д.)
+# корректно подключены в вашем файле так же, как были до этого.
 
 class VoiceAssistant:
     def __init__(self, app, lamp_objects):
         self.app = app
         self.lamp_objects = lamp_objects
         self.MODEL_PATH = "model/vosk-model-small-ru-0.22"
-        self.model = Model(self.MODEL_PATH) if (HAS_VOSK and os.path.exists(self.MODEL_PATH)) else None
+
+        # Модель изначально пустая, чтобы не блокировать главный поток при старте на Android
+        self.model = None
         self.q = queue.Queue()
         self.listening = False
         self.is_recording_setting = False
@@ -339,6 +343,26 @@ class VoiceAssistant:
 
         self.is_active = False
         self.last_active_time = 0
+
+        # Асинхронная загрузка модели Vosk в фоне для стабильного запуска на смартфоне
+        if HAS_VOSK and os.path.exists(self.MODEL_PATH):
+            threading.Thread(target=self._load_model_background, daemon=True).start()
+        else:
+            print("[VOICE]: Модель Vosk не найдена или отключена.")
+            self.app.update_assistant_status("Ассистент: Нет модели Vosk", color=(0.9, 0.2, 0.2, 1))
+
+    def _load_model_background(self):
+        try:
+            print("[VOSK] Загрузка модели в фоновом потоке...")
+            self.model = Model(self.MODEL_PATH)
+            print("[VOSK] Модель успешно загружена!")
+
+            # Как только модель загрузилась в фоне, запускаем прослушивание через Clock
+            Clock.schedule_once(lambda dt: self.start_listening(), 0)
+        except Exception as e:
+            print(f"[VOSK ERROR]: {e}")
+            Clock.schedule_once(
+                lambda dt: self.app.update_assistant_status("Ошибка загрузки модели", color=(1, 0.2, 0.2, 1)), 0)
 
     def speak(self, text):
         if text and self.app.config_data.get("tts_enabled", True):
