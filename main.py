@@ -873,9 +873,10 @@ class SmartHomeApp(App):
         )
         content.bind(minimum_height=content.setter('height'))
 
-        # 2. Создаем скролл и добавляем туда контент ровно ОДИН раз
+        # 2. Скролл должен занимать ровно 100% доступного пространства по ширине и высоте
         scroll = ScrollView(
             size_hint=(1, 1),
+            size_hint_x=1,
             do_scroll_x=False,
             do_scroll_y=True
         )
@@ -1111,7 +1112,13 @@ class SmartHomeApp(App):
             resp_entries[(item["sub_action"], item["chid"])] = inp
 
         # Сборка интерфейса попапа
-        popup_layout = BoxLayout(orientation='vertical', padding=[dp(10), dp(10), dp(10), dp(10)], spacing=dp(10))
+            # Корневой контейнер попапа
+        popup_layout = BoxLayout(
+            orientation='vertical',
+            size_hint=(1, 1),  # Обязательно на весь экран попапа!
+            padding=[dp(10), dp(10), dp(10), dp(10)],
+            spacing=dp(10)
+        )
         popup_layout.add_widget(scroll)
 
         btn_box = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(40), spacing=dp(10))
