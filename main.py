@@ -714,6 +714,7 @@ class SmartHomeApp(App):
         labels_container.add_widget(self.assistant_label)
         root_layout.add_widget(labels_container)
 
+        # Контейнер для ламп
         lamps_container = GridLayout(cols=1, spacing=dp(10), size_hint_x=1, size_hint_y=None)
         lamps_container.bind(minimum_height=lamps_container.setter('height'))
 
@@ -723,56 +724,61 @@ class SmartHomeApp(App):
             (IMG_LAMP_3_OFF, IMG_LAMP_3_ON),
         ]
 
+        # Заполняем список ламп
         for idx, ch in enumerate(self.config_data.get("channels", [])):
             off_img, on_img = icon_pairs[idx] if idx < len(icon_pairs) else (IMG_LAMP_1_OFF, IMG_LAMP_1_ON)
             lamp = LampRow(ch["id"], off_img, on_img, lambda: f"http://{self.config_data.get('device_ip')}",
-                               app_ref=self)
+                           app_ref=self)
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-            scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
-            scroll.add_widget(lamps_container)
-            root_layout.add_widget(scroll)
+        # Скролл для ламп (теперь вне цикла, как и должно быть)
+        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
+        scroll.add_widget(lamps_container)
+        root_layout.add_widget(scroll)
 
-            btn_all_on = Button(
-                text="ВКЛЮЧИТЬ ВСЕ",
-                font_size='13sp',
-                bold=True,
-                background_normal='',
-                background_color=(0, 0, 0, 0),
-                color=(0.2, 0.85, 0.3, 1),
-                size_hint=(1, 1),
-                halign='center',
-                valign='middle'
-            )
-            btn_all_on.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
-            btn_all_on.bind(on_press=lambda x: self.turn_all_on())
+        # Нижние кнопки управления
+        btn_all_on = Button(
+            text="ВКЛЮЧИТЬ ВСЕ",
+            font_size='13sp',
+            bold=True,
+            background_normal='',
+            background_color=(0, 0, 0, 0),
+            color=(0.2, 0.85, 0.3, 1),
+            size_hint=(1, None),
+            height=dp(40),
+            halign='center',
+            valign='middle'
+        )
+        btn_all_on.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
+        btn_all_on.bind(on_press=lambda x: self.turn_all_on())
 
-            btn_all_off = Button(
-                text="ВЫКЛЮЧИТЬ ВСЕ",
-                font_size='13sp',
-                bold=True,
-                background_normal='',
-                background_color=(0, 0, 0, 0),
-                color=(0.9, 0.2, 0.2, 1),
-                size_hint=(1, 1),
-                halign='center',
-                valign='middle'
-            )
-            btn_all_off.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
-            btn_all_off.bind(on_press=lambda x: self.turn_all_off())
+        btn_all_off = Button(
+            text="ВЫКЛЮЧИТЬ ВСЕ",
+            font_size='13sp',
+            bold=True,
+            background_normal='',
+            background_color=(0, 0, 0, 0),
+            color=(0.9, 0.2, 0.2, 1),
+            size_hint=(1, None),
+            height=dp(40),
+            halign='center',
+            valign='middle'
+        )
+        btn_all_off.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
+        btn_all_off.bind(on_press=lambda x: self.turn_all_off())
 
-            btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint=(1, None), height=dp(50))
-            btn_box.add_widget(btn_all_on)
-            btn_box.add_widget(btn_all_off)
-            root_layout.add_widget(btn_box)
+        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint=(1, None), height=dp(50))
+        btn_box.add_widget(btn_all_on)
+        btn_box.add_widget(btn_all_off)
+        root_layout.add_widget(btn_box)
 
-            self.request_android_permissions(on_granted=self._start_assistant)
+        self.request_android_permissions(on_granted=self._start_assistant)
 
-            Clock.schedule_once(lambda dt: self.poll_statuses(None), 0.5)
-            Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
+        Clock.schedule_once(lambda dt: self.poll_statuses(None), 0.5)
+        Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
 
-            return root_layout
+        return root_layout
 
     def get_config_path(self):
         base_dir = self.user_data_dir if hasattr(self, 'user_data_dir') else os.path.dirname(os.path.abspath(__file__))
