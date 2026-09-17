@@ -640,7 +640,7 @@ class SmartHomeApp(App):
         root_layout = BoxLayout(
             orientation='vertical',
             size_hint=(1, 1),
-            pos_hint={'top': 1, 'left': 1},  # <--- Вот это прижимает весь экран к верхней границе
+            pos_hint={'top': 1},  # <--- Добавьте эту строку, чтобы прижать весь экран к верху
             padding=[dp(15), dp(15), dp(15), dp(10)],
             spacing=dp(10)
         )
@@ -735,7 +735,8 @@ class SmartHomeApp(App):
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
+        # Найдите текущую строчку создания скролла и просто допишите в неё size_hint_y=1:
+        scroll = ScrollView(size_hint=(1, 1), size_hint_y=1, do_scroll_x=False, do_scroll_y=True)
         scroll.add_widget(lamps_container)
         root_layout.add_widget(scroll)
 
