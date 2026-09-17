@@ -12,8 +12,11 @@ package.domain = org.smarthome
 # (str) Директория с исходным кодом
 source.dir = .
 
-# (list) Расширения файлов для включения в APK (включая иконки и json-конфиг)
+# (list) Расширения файлов для включения в APK
 source.include_exts = py,png,jpg,kv,atlas,json
+
+# (list) Явно разрешаем включить всю папку модели и её содержимое
+source.include_patterns = model/*,model/**/*
 
 # (str) Версия приложения
 version = 1.0.0
