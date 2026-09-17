@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import queue
 import threading
 import time
 import requests
@@ -27,39 +28,38 @@ from kivy.utils import platform
 from kivy.uix.relativelayout import RelativeLayout
 from kivy.graphics import Color, RoundedRectangle
 
-# Проверка платформы Android и инициализация Java-классов для SpeechRecognizer
+# --- Размеры окна для тестов на ПК ---
+Window.size = (380, 680)
+
+# Проверка платформы Android
 if platform == 'android':
     try:
-        from jnius import autoclass, java_method, PythonJavaClass
-
-        PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        Context = autoclass('android.content.Context')
-        Intent = autoclass('android.content.Intent')
-        RecognizerIntent = autoclass('android.speech.RecognizerIntent')
-        SpeechRecognizer = autoclass('android.speech.SpeechRecognizer')
-        Looper = autoclass('android.os.Looper')
-        Handler = autoclass('android.os.Handler')
-        Locale = autoclass('java.util.Locale')
-
-
-        class PyRunnable(PythonJavaClass):
-            __javainterfaces__ = ['java/lang/Runnable']
-
-            def __init__(self, callback):
-                super().__init__()
-                self.callback = callback
-
-            @java_method('()V')
-            def run(self):
-                self.callback()
-
-
-        HAS_SPEECH_RECOGNIZER = True
+        from jnius import autoclass
+        AudioRecord = autoclass('android.media.AudioRecord')
+        AudioSource = autoclass('android.media.MediaRecorder$AudioSource')
+        AudioFormat = autoclass('android.media.AudioFormat')
+        HAS_ANDROID_AUDIO = True
     except Exception as e:
-        print(f"[ANDROID SPEECH INIT ERROR]: {e}")
-        HAS_SPEECH_RECOGNIZER = False
+        print(f"[ANDROID JNIUS AUDIO INIT ERROR]: {e}")
+        HAS_ANDROID_AUDIO = False
 else:
-    HAS_SPEECH_RECOGNIZER = False
+    HAS_ANDROID_AUDIO = False
+
+# Безопасный импорт sounddevice для ПК
+try:
+    import sounddevice as sd
+    HAS_SOUNDDEVICE = True
+except ImportError:
+    sd = None
+    HAS_SOUNDDEVICE = False
+
+try:
+    from vosk import Model, KaldiRecognizer
+    HAS_VOSK = True
+except ImportError:
+    Model = None
+    KaldiRecognizer = None
+    HAS_VOSK = False
 
 tts_lock = threading.Lock()
 
@@ -177,8 +177,8 @@ DEFAULT_CONFIG = {
     "wake_timeout_sec": 120,
     "channels": [
         {"id": 4, "name": "Лампу 1"},
-        {"id": 0, "name": "Лампу 2"},
-        {"id": 5, "name": "Лампу 3"}
+        {"id": 5, "name": "Лампу 2"},
+        {"id": 0, "name": "Лампу 3"}
     ],
     "voice_commands": [],
     "voice_responses": []
@@ -193,6 +193,20 @@ def get_img(filename):
     return os.path.join(base_dir, filename)
 
 
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        save_config(DEFAULT_CONFIG)
+        return DEFAULT_CONFIG
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return DEFAULT_CONFIG
+
+
+def save_config(config_data):
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config_data, f, ensure_ascii=False, indent=4)
 
 
 class RoundedButton(Button):
@@ -316,142 +330,160 @@ class VoiceAssistant:
     def __init__(self, app, lamp_objects):
         self.app = app
         self.lamp_objects = lamp_objects
+        # Автоматический выбор правильного пути для ПК и Android
+        if platform == 'android':
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.MODEL_PATH = os.path.join(base_dir, "model", "vosk-model-small-ru-0.22")
+        else:
+            self.MODEL_PATH = "model/vosk-model-small-ru-0.22"
+
+        # Модель изначально пустая, чтобы не блокировать главный поток при старте на Android
+        self.model = None
+        self.q = queue.Queue()
         self.listening = False
+        self.is_recording_setting = False
+        self.stream = None
+
         self.is_active = False
         self.last_active_time = 0
-        self.speech_recognizer = None
-        self.handler = None
-        if platform == 'android':
-            self.handler = Handler(Looper.getMainLooper())
+
+        # Асинхронная загрузка модели Vosk в фоне для стабильного запуска на смартфоне
+        if HAS_VOSK and os.path.exists(self.MODEL_PATH):
+            threading.Thread(target=self._load_model_background, daemon=True).start()
+        else:
+            print("[VOICE]: Модель Vosk не найдена или отключена.")
+            self.app.update_assistant_status("Ассистент: Нет модели Vosk", color=(0.9, 0.2, 0.2, 1))
+
+    def _load_model_background(self):
+        try:
+            print("[VOSK] Загрузка модели в фоновом потоке...")
+            self.model = Model(self.MODEL_PATH)
+            print("[VOSK] Модель успешно загружена!")
+
+            # Как только модель загрузилась в фоне, запускаем прослушивание через Clock
+            Clock.schedule_once(lambda dt: self.start_listening(), 0)
+        except Exception as e:
+            print(f"[VOSK ERROR]: {e}")
+            Clock.schedule_once(
+                lambda dt: self.app.update_assistant_status("Ошибка загрузки модели", color=(1, 0.2, 0.2, 1)), 0)
 
     def speak(self, text):
         if text and self.app.config_data.get("tts_enabled", True):
             self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
 
+            while not self.q.empty():
+                try:
+                    self.q.get_nowait()
+                except queue.Empty:
+                    break
+
             def restore_status():
+                while not self.q.empty():
+                    try:
+                        self.q.get_nowait()
+                    except queue.Empty:
+                        break
+
                 if self.is_active:
                     self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
                 else:
                     ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
                     self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
-                self.restart_listening()
 
             speak(text, on_done_callback=restore_status)
 
     def start_listening(self):
-        self.listening = True
-        if platform == 'android' and HAS_SPEECH_RECOGNIZER:
-            self.handler.post(PyRunnable(self._init_and_start_recognizer))
-        else:
-            self.app.update_assistant_status("Ассистент: Готов к работе (Режим ПК)",
-                                             color=(0.6, 0.6, 0.6, 1))
-
-    def _init_and_start_recognizer(self):
-        try:
-            activity = PythonActivity.mActivity
-            self.speech_recognizer = SpeechRecognizer.createSpeechRecognizer(activity)
-
-            class AndroidRecognitionListener(PythonJavaClass):
-                __javainterfaces__ = ['android/speech/RecognitionListener']
-
-                # ... остальные методы (onResults, onError и т.д.)
-
-                def __init__(self, assistant):
-                    super().__init__()
-                    self.assistant = assistant
-
-                @java_method('(Landroid/os/Bundle;)V')
-                def onReadyForSpeech(self, params):
-                    pass
-
-                @java_method('()V')
-                def onBeginningOfSpeech(self):
-                    pass
-
-                @java_method('(F)V')
-                def onRmsChanged(self, rmsdB):
-                    pass
-
-                @java_method('([B)V')
-                def onBufferReceived(self, buffer):
-                    pass
-
-                @java_method('()V')
-                def onEndOfSpeech(self):
-                    pass
-
-                @java_method('(I)V')
-                def onError(self, error):
-                    print(f"[SPEECH ERROR CODE]: {error}")
-                    Clock.schedule_once(lambda dt: self.assistant.restart_listening(), 0.5)
-
-                @java_method('(Landroid/os/Bundle;)V')
-                def onResults(self, results):
-                    matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    if matches and matches.size() > 0:
-                        text = matches.get(0)
-                        if text:
-                            Clock.schedule_once(lambda dt, t=text: self.assistant.process_command(t))
-                    else:
-                        Clock.schedule_once(lambda dt: self.assistant.restart_listening())
-
-                @java_method('(Landroid/os/Bundle;)V')
-                def onPartialResults(self, partialResults):
-                    pass
-
-                @java_method('(ILandroid/os/Bundle;)V')
-                def onEvent(self, eventType, params):
-                    pass
-
-            self.listener = AndroidRecognitionListener(self)
-            self.speech_recognizer.setRecognitionListener(self.listener)
-            self.restart_listening()
-        except Exception as e:
-            print(f"[SPEECH RECOGNIZER INIT ERROR]: {e}")
-
-    def restart_listening(self):
-        if platform != 'android' or not self.speech_recognizer:
+        if not HAS_VOSK or not self.model:
+            print("[VOICE]: Модель Vosk не найдена.")
+            self.app.update_assistant_status("Ассистент: Нет модели Vosk", color=(0.9, 0.2, 0.2, 1))
             return
 
-        # Создаем класс-раннабл для безопасного выполнения в UI-потоке Android
-        class SafeRunner(PythonJavaClass):
-            __javainterfaces__ = ['java/lang/Runnable']
+        self.listening = True
 
-            def __init__(self, assistant):
-                super().__init__()
-                self.assistant = assistant
+        if platform == 'android':
+            threading.Thread(target=self._android_record_loop, daemon=True).start()
+        else:
+            if not HAS_SOUNDDEVICE:
+                self.app.update_assistant_status("Ассистент: Ошибка sounddevice", color=(0.9, 0.2, 0.2, 1))
+                return
+            try:
+                self.stream = sd.RawInputStream(
+                    samplerate=16000, blocksize=8000, dtype='int16', channels=1, callback=self.audio_callback
+                )
+                self.stream.start()
 
-            @java_method('()V')
-            def run(self):
-                try:
-                    if self.assistant.speech_recognizer:
-                        try:
-                            self.assistant.speech_recognizer.stopListening()
-                        except Exception:
-                            pass
+                ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
+                self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
 
-                        intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-                        intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                threading.Thread(target=self.processor_loop, daemon=True).start()
+            except Exception as e:
+                print(f"[PC RECORD ERROR]: {e}")
+                self.app.update_assistant_status("Ассистент: Ошибка микрофона ПК", color=(0.9, 0.2, 0.2, 1))
 
-                        self.assistant.speech_recognizer.startListening(intent)
-                except Exception as e:
-                    print(f"[START LISTENING ERROR]: {e}")
+    def _android_record_loop(self):
+        if not HAS_ANDROID_AUDIO:
+            self.app.update_assistant_status("Ассистент: JNI Audio недоступен", color=(0.9, 0.2, 0.2, 1))
+            return
+
+        sample_rate = 16000
+        channel_config = AudioFormat.CHANNEL_IN_MONO
+        audio_format = AudioFormat.ENCODING_PCM_16BIT
 
         try:
-            if hasattr(self, 'handler') and self.handler:
-                self.handler.post(SafeRunner(self))
+            min_buf_size = AudioRecord.getMinBufferSize(sample_rate, channel_config, audio_format)
+            buffer_size = max(min_buf_size, 4000)
 
-            # Обновление статуса в интерфейсе
+            audio_record = AudioRecord(
+                AudioSource.MIC,
+                sample_rate,
+                channel_config,
+                audio_format,
+                buffer_size
+            )
+
+            audio_record.startRecording()
             ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
-            if getattr(self, 'is_active', False):
-                self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
-            else:
-                self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+            self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+
+            threading.Thread(target=self.processor_loop, daemon=True).start()
+
+            from jnius import byteArray
+            buf = byteArray(2048)
+
+            while self.listening:
+                read_bytes = audio_record.read(buf, 0, len(buf))
+                if read_bytes > 0:
+                    raw_data = bytes(buf[:read_bytes])
+                    self.q.put(raw_data)
+                time.sleep(0.01)
+
+            audio_record.stop()
+            audio_record.release()
         except Exception as e:
-            print(f"[SPEECH RECOGNIZER RESTART ERROR]: {e}")
+            print(f"[ANDROID RECORD LOOP ERROR]: {e}")
+            self.app.update_assistant_status("Ассистент: Ошибка микрофона Android", color=(0.9, 0.2, 0.2, 1))
+
+    def audio_callback(self, indata, frames, time_info, status):
+        self.q.put(bytes(indata))
+
+    def processor_loop(self):
+        if not HAS_VOSK or not self.model:
+            return
+        recognizer = KaldiRecognizer(self.model, 16000)
+        while self.listening:
+            if self.is_recording_setting:
+                time.sleep(0.05)
+                continue
+
+            try:
+                data = self.q.get(timeout=1)
+                if recognizer.AcceptWaveform(data):
+                    res = json.loads(recognizer.Result())
+                    text = res.get('text', '').lower().strip()
+                    if text:
+                        self.process_command(text)
+            except queue.Empty:
+                continue
 
     def check_activity_timeout(self, dt=None):
         if not self.is_active:
@@ -484,7 +516,6 @@ class VoiceAssistant:
     def process_command(self, raw_command):
         norm_command = raw_command.lower().strip()
         if not norm_command:
-            self.restart_listening()
             return
 
         wake_word = (self.app.config_data.get("wake_word") or "джарвис").strip().lower()
@@ -505,7 +536,6 @@ class VoiceAssistant:
                 return
 
         if not self.is_active:
-            self.restart_listening()
             return
 
         self.activate()
@@ -592,9 +622,6 @@ class VoiceAssistant:
                     lamp.turn_on()
                     resp = self.get_custom_response("on", lamp.channel_id) or "Включаю"
             self.speak(resp)
-        else:
-            self.restart_listening()
-
 
 class SmartHomeApp(App):
     def build(self):
@@ -699,53 +726,53 @@ class SmartHomeApp(App):
         for idx, ch in enumerate(self.config_data.get("channels", [])):
             off_img, on_img = icon_pairs[idx] if idx < len(icon_pairs) else (IMG_LAMP_1_OFF, IMG_LAMP_1_ON)
             lamp = LampRow(ch["id"], off_img, on_img, lambda: f"http://{self.config_data.get('device_ip')}",
-                           app_ref=self)
+                               app_ref=self)
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
-        scroll.add_widget(lamps_container)
-        root_layout.add_widget(scroll)
+            scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
+            scroll.add_widget(lamps_container)
+            root_layout.add_widget(scroll)
 
-        btn_all_on = Button(
-            text="ВКЛЮЧИТЬ ВСЕ",
-            font_size='13sp',
-            bold=True,
-            background_normal='',
-            background_color=(0, 0, 0, 0),
-            color=(0.2, 0.85, 0.3, 1),
-            size_hint=(1, 1),
-            halign='center',
-            valign='middle'
-        )
-        btn_all_on.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
-        btn_all_on.bind(on_press=lambda x: self.turn_all_on())
+            btn_all_on = Button(
+                text="ВКЛЮЧИТЬ ВСЕ",
+                font_size='13sp',
+                bold=True,
+                background_normal='',
+                background_color=(0, 0, 0, 0),
+                color=(0.2, 0.85, 0.3, 1),
+                size_hint=(1, 1),
+                halign='center',
+                valign='middle'
+            )
+            btn_all_on.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
+            btn_all_on.bind(on_press=lambda x: self.turn_all_on())
 
-        btn_all_off = Button(
-            text="ВЫКЛЮЧИТЬ ВСЕ",
-            font_size='13sp',
-            bold=True,
-            background_normal='',
-            background_color=(0, 0, 0, 0),
-            color=(0.9, 0.2, 0.2, 1),
-            size_hint=(1, 1),
-            halign='center',
-            valign='middle'
-        )
-        btn_all_off.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
-        btn_all_off.bind(on_press=lambda x: self.turn_all_off())
+            btn_all_off = Button(
+                text="ВЫКЛЮЧИТЬ ВСЕ",
+                font_size='13sp',
+                bold=True,
+                background_normal='',
+                background_color=(0, 0, 0, 0),
+                color=(0.9, 0.2, 0.2, 1),
+                size_hint=(1, 1),
+                halign='center',
+                valign='middle'
+            )
+            btn_all_off.bind(size=lambda s, w: setattr(s, 'text_size', s.size))
+            btn_all_off.bind(on_press=lambda x: self.turn_all_off())
 
-        btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint=(1, None), height=dp(50))
-        btn_box.add_widget(btn_all_on)
-        btn_box.add_widget(btn_all_off)
-        root_layout.add_widget(btn_box)
+            btn_box = BoxLayout(orientation='horizontal', spacing=dp(12), size_hint=(1, None), height=dp(50))
+            btn_box.add_widget(btn_all_on)
+            btn_box.add_widget(btn_all_off)
+            root_layout.add_widget(btn_box)
 
-        self.request_android_permissions(on_granted=self._start_assistant)
+            self.request_android_permissions(on_granted=self._start_assistant)
 
-        Clock.schedule_once(lambda dt: self.poll_statuses(None), 0.5)
-        Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
+            Clock.schedule_once(lambda dt: self.poll_statuses(None), 0.5)
+            Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
 
-        return root_layout
+            return root_layout
 
     def get_config_path(self):
         base_dir = self.user_data_dir if hasattr(self, 'user_data_dir') else os.path.dirname(os.path.abspath(__file__))
@@ -870,7 +897,7 @@ class SmartHomeApp(App):
                         print("[PERMISSIONS] Отказано в доступе к микрофону")
                         self.update_assistant_status("Ассистент: Нет прав на микрофон", color=(0.9, 0.2, 0.2, 1))
 
-                request_permissions([Permission.RECORD_AUDIO], cb)
+                request_permissions([Permission.RECORD_AUDIO, Permission.INTERNET], cb)
             except Exception as e:
                 print(f"[PERMISSIONS ERROR]: {e}")
                 if on_granted:
@@ -922,9 +949,24 @@ class SmartHomeApp(App):
         self.fetch_temperature()
 
     def open_settings(self):
-        scroll = ScrollView(size_hint=(1, 1))
-        content = GridLayout(cols=1, spacing=dp(10), size_hint_y=None, padding=[dp(12), dp(10), dp(12), dp(10)])
+        # 1. Создаем контент сетки с правильным биндингом высоты для скролла
+        content = GridLayout(
+            cols=1,
+            spacing=dp(10),
+            size_hint_x=1,
+            size_hint_y=None,
+            padding=[dp(12), dp(10), dp(12), dp(10)]
+        )
         content.bind(minimum_height=content.setter('height'))
+
+        # 2. Скролл должен занимать ровно 100% доступного пространства по ширине и высоте
+        scroll = ScrollView(
+            size_hint=(1, 1),
+            size_hint_x=1,
+            do_scroll_x=False,
+            do_scroll_y=True
+        )
+        scroll.add_widget(content)
 
         def create_section_header(text):
             lbl = Label(
@@ -945,12 +987,11 @@ class SmartHomeApp(App):
                 text=str(text),
                 multiline=multiline,
                 size_hint_y=None,
+                height=dp(40),
                 font_size=font_size,
                 input_filter=input_filter,
                 padding=[dp(8), dp(8), dp(8), dp(8)]
             )
-            inp.bind(minimum_height=lambda inst, val: setattr(inst, 'height', max(dp(40), inst.minimum_height)))
-            inp.height = max(dp(40), inp.minimum_height)
             return inp
 
         def create_mic_button(on_press_callback):
@@ -979,7 +1020,7 @@ class SmartHomeApp(App):
             btn.bind(on_press=on_press_callback)
             return btn
 
-        def create_setting_row(label_text, input_widget, mic_btn=None, is_flexible_input=True):
+        def create_setting_row(label_text, input_widget, mic_btn=None):
             row = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(44), spacing=dp(8))
             lbl = Label(
                 text=label_text,
@@ -992,8 +1033,7 @@ class SmartHomeApp(App):
             lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
             row.add_widget(lbl)
 
-            if is_flexible_input:
-                input_widget.size_hint_x = 0.55
+            input_widget.size_hint_x = 0.55
             row.add_widget(input_widget)
 
             if mic_btn:
@@ -1001,138 +1041,64 @@ class SmartHomeApp(App):
             else:
                 row.add_widget(Widget(size_hint=(None, None), size=(dp(36), dp(36))))
 
-            input_widget.bind(height=lambda inst, val, r=row: setattr(r, 'height', max(dp(44), val)))
-            row.height = max(dp(44), input_widget.height)
             return row
 
         def record_to_entry(entry_widget):
-            if platform != 'android' or not HAS_SPEECH_RECOGNIZER:
-                self.update_assistant_status("Запись с микрофона доступна на Android", color=(0.9, 0.6, 0.2, 1))
+            if not hasattr(self, 'assistant') or not self.assistant or not getattr(self.assistant, 'model', None):
+                entry_widget.text = "Ошибка: нет Vosk"
                 return
 
             original_text = entry_widget.text
-            self.update_assistant_status("Запись в настройках...", color=(1.0, 0.6, 0.2, 1))
-            Clock.schedule_once(lambda _dt: setattr(entry_widget, 'text', "Слушаю..."))
 
-            def _listen_setting():
+            def listen_thread():
+                self.assistant.is_recording_setting = True
+                self.update_assistant_status("Запись в настройках...", color=(1.0, 0.6, 0.2, 1))
+                Clock.schedule_once(lambda _dt: setattr(entry_widget, 'text', "Слушаю..."))
+
+                while not self.assistant.q.empty():
+                    try:
+                        self.assistant.q.get_nowait()
+                    except queue.Empty:
+                        break
+
+                rec = KaldiRecognizer(self.assistant.model, 16000)
+                start_time = time.time()
+                captured_text = ""
+
                 try:
-                    activity = PythonActivity.mActivity
-                    setting_recognizer = SpeechRecognizer.createSpeechRecognizer(activity)
+                    while time.time() - start_time < 4:
+                        try:
+                            data = self.assistant.q.get(timeout=0.2)
+                            if rec.AcceptWaveform(data):
+                                res = json.loads(rec.Result())
+                                captured_text = res.get('text', '').strip()
+                                if captured_text:
+                                    break
+                        except queue.Empty:
+                            continue
+                        except Exception:
+                            continue
 
-                    class SettingListener(PythonJavaClass):
-                        __javainterfaces__ = ['android/speech/RecognitionListener']
-
-                        def __init__(self, rec_obj, widget, orig, app_ref):
-                            super().__init__()
-                            self.rec_obj = rec_obj
-                            self.widget = widget
-                            self.orig = orig
-                            self.app_ref = app_ref
-
-                        @java_method('(Landroid/os/Bundle;)V')
-                        def onReadyForSpeech(self, params):
+                    if not captured_text:
+                        try:
+                            res = json.loads(rec.FinalResult())
+                            captured_text = res.get('text', '').strip()
+                        except Exception:
                             pass
+                finally:
+                    self.assistant.is_recording_setting = False
+                    if self.assistant.is_active:
+                        self.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
+                    else:
+                        ww = self.config_data.get("wake_word", "джарвис").capitalize()
+                        self.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
 
-                        @java_method('()V')
-                        def onBeginningOfSpeech(self):
-                            pass
+                final_text = captured_text if captured_text else original_text
+                Clock.schedule_once(lambda _dt: setattr(entry_widget, 'text', final_text))
 
-                        @java_method('(F)V')
-                        def onRmsChanged(self, rmsdB):
-                            pass
+            threading.Thread(target=listen_thread, daemon=True).start()
 
-                        @java_method('([B)V')
-                        def onBufferReceived(self, buffer):
-                            pass
-
-                        @java_method('()V')
-                        def onEndOfSpeech(self):
-                            pass
-
-                        @java_method('(I)V')
-                        def onError(self, error):
-                            # Словарь расшифровки кодов ошибок Android SpeechRecognizer
-                            error_messages = {
-                                1: "Network timeout (ERROR_NETWORK_TIMEOUT)",
-                                2: "Network error (ERROR_NETWORK)",
-                                3: "Audio recording error (ERROR_AUDIO)",
-                                4: "Server error (ERROR_SERVER)",
-                                5: "Client side error (ERROR_CLIENT)",
-                                6: "No speech input (ERROR_SPEECH_TIMEOUT)",
-                                7: "No match found (ERROR_NO_MATCH)",
-                                8: "Recognizer busy (ERROR_RECOGNIZER_BUSY)",
-                                9: "Insufficient permissions (ERROR_INSUFFICIENT_PERMISSIONS)"
-                            }
-                            err_desc = error_messages.get(error, f"Unknown error code {error}")
-                            print(f"[SETTING REC ERROR CODE]: {error} -> {err_desc}")
-
-                            # Выводим понятную ошибку в интерфейс статуса
-                            Clock.schedule_once(
-                                lambda dt: self.app_ref.update_assistant_status(f"Ошибка микрофона: {error}",
-                                                                                color=(0.9, 0.2, 0.2, 1)))
-
-                            Clock.schedule_once(lambda dt: setattr(self.widget, 'text', self.orig))
-                            try:
-                                self.rec_obj.destroy()
-                            except Exception:
-                                pass
-                            self._restore_status()
-
-                        @java_method('(Landroid/os/Bundle;)V')
-                        def onResults(self, results):
-                            matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            txt = self.orig
-                            if matches and matches.size() > 0:
-                                t = matches.get(0)
-                                if t:
-                                    txt = t
-                            Clock.schedule_once(lambda dt: setattr(self.widget, 'text', txt))
-                            try:
-                                self.rec_obj.destroy()
-                            except Exception:
-                                pass
-                            self._restore_status()
-
-                        @java_method('(Landroid/os/Bundle;)V')
-                        def onPartialResults(self, partialResults):
-                            pass
-
-                        @java_method('(ILandroid/os/Bundle;)V')
-                        def onEvent(self, eventType, params):
-                            pass
-
-                        def _restore_status(self):
-                            if hasattr(self.app_ref, 'assistant') and self.app_ref.assistant:
-                                if self.app_ref.assistant.is_active:
-                                    self.app_ref.update_assistant_status("Ассистент: Слушаю команды...",
-                                                                         color=(0.2, 0.85, 0.3, 1))
-                                else:
-                                    ww = self.app_ref.config_data.get("wake_word", "джарвис").capitalize()
-                                    self.app_ref.update_assistant_status(f"Ассистент: Ожидание («{ww}»)",
-                                                                         color=(0.6, 0.6, 0.6, 1))
-                                self.app_ref.assistant.restart_listening()
-
-                    listener = SettingListener(setting_recognizer, entry_widget, original_text, self)
-                    setting_recognizer.setRecognitionListener(listener)
-
-                    intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-
-                    setting_recognizer.startListening(intent)
-                except Exception as e:
-                    print(f"[SETTING REC ERROR]: {e}")
-                    Clock.schedule_once(lambda dt: setattr(entry_widget, 'text', original_text))
-
-            if hasattr(self, 'assistant') and self.assistant and self.assistant.speech_recognizer:
-                try:
-                    self.assistant.speech_recognizer.stopListening()
-                except Exception:
-                    pass
-
-            if hasattr(self, 'assistant') and self.assistant and self.assistant.handler:
-                self.assistant.handler.post(PyRunnable(_listen_setting))
-
+        # Наполнение формы
         content.add_widget(create_section_header("Общие настройки"))
         ip_input = create_auto_input(self.config_data.get("device_ip", "192.168.1.39"), multiline=False)
         content.add_widget(create_setting_row("IP-адрес:", ip_input))
@@ -1231,40 +1197,28 @@ class SmartHomeApp(App):
             content.add_widget(create_setting_row(f"{item['label']}:", inp, btn_mic))
             resp_entries[(item["sub_action"], item["chid"])] = inp
 
-        scroll.add_widget(content)
-
-        popup_layout = BoxLayout(orientation='vertical', padding=[dp(10), dp(10), dp(10), dp(10)], spacing=dp(10))
-        popup_layout.add_widget(scroll)
-
-        btn_box = BoxLayout(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(40),
+        # Сборка интерфейса попапа
+            # Корневой контейнер попапа
+        popup_layout = BoxLayout(
+            orientation='vertical',
+            size_hint=(1, 1),  # Обязательно на весь экран попапа!
+            padding=[dp(10), dp(10), dp(10), dp(10)],
             spacing=dp(10)
         )
+        popup_layout.add_widget(scroll)
 
+        btn_box = BoxLayout(orientation='horizontal', size_hint_y=None, height=dp(40), spacing=dp(10))
         btn_box.add_widget(Widget())
 
         btn_save = RoundedButton(
-            text='Сохранить',
-            font_size='12sp',
-            bold=True,
-            size_hint=(None, None),
-            size=(dp(100), dp(32)),
-            bg_color=(0, 0, 0, 0),
-            radius=[dp(10)],
-            color=(0.2, 0.85, 0.3, 1)
+            text='Сохранить', font_size='12sp', bold=True,
+            size_hint=(None, None), size=(dp(100), dp(32)),
+            bg_color=(0, 0, 0, 0), radius=[dp(10)], color=(0.2, 0.85, 0.3, 1)
         )
-
         btn_cancel = RoundedButton(
-            text='Отмена',
-            font_size='12sp',
-            bold=True,
-            size_hint=(None, None),
-            size=(dp(100), dp(32)),
-            bg_color=(0, 0, 0, 0),
-            radius=[dp(10)],
-            color=(0.9, 0.2, 0.2, 1)
+            text='Отмена', font_size='12sp', bold=True,
+            size_hint=(None, None), size=(dp(100), dp(32)),
+            bg_color=(0, 0, 0, 0), radius=[dp(10)], color=(0.9, 0.2, 0.2, 1)
         )
 
         def save_settings_data(instance):
@@ -1288,8 +1242,13 @@ class SmartHomeApp(App):
                     {"sub_action": sub_action, "channel_id": chid, "response_text": resp_inp.text.strip()})
             self.config_data["voice_responses"] = updated_resps
 
-            # Вызываем метод сохранения класса
-            self.save_config(self.config_data)
+            try:
+                config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(self.config_data, f, ensure_ascii=False, indent=4)
+                print("[CONFIG] Настройки успешно сохранены!")
+            except Exception as e:
+                print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
 
             popup.dismiss()
 
