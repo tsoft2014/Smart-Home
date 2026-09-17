@@ -332,7 +332,12 @@ class VoiceAssistant:
     def __init__(self, app, lamp_objects):
         self.app = app
         self.lamp_objects = lamp_objects
-        self.MODEL_PATH = "model/vosk-model-small-ru-0.22"
+        # Автоматический выбор правильного пути для ПК и Android
+        if platform == 'android':
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.MODEL_PATH = os.path.join(base_dir, "model", "vosk-model-small-ru-0.22")
+        else:
+            self.MODEL_PATH = "model/vosk-model-small-ru-0.22"
 
         # Модель изначально пустая, чтобы не блокировать главный поток при старте на Android
         self.model = None
