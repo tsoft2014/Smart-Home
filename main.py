@@ -29,7 +29,7 @@ from kivy.uix.relativelayout import RelativeLayout
 from kivy.graphics import Color, RoundedRectangle
 
 # --- Размеры окна для тестов на ПК ---
-Window.size = (380, 680)
+#Window.size = (380, 680)
 
 # Проверка платформы Android
 if platform == 'android':
@@ -325,6 +325,8 @@ class LampRow(BoxLayout):
 
         threading.Thread(target=req, daemon=True).start()
 
+# Убедитесь, что эти импорты и переменные (HAS_VOSK, HAS_SOUNDDEVICE, HAS_ANDROID_AUDIO, speak и т.д.)
+# корректно подключены в вашем файле так же, как были до этого.
 
 class VoiceAssistant:
     def __init__(self, app, lamp_objects):
@@ -623,16 +625,18 @@ class VoiceAssistant:
                     resp = self.get_custom_response("on", lamp.channel_id) or "Включаю"
             self.speak(resp)
 
+
 class SmartHomeApp(App):
     def build(self):
         self.title = "Управление освещением"
-        self.config_data = self.load_config()
+        self.config_data = load_config()
         self.lamp_objects = []
         self.esp_connected = False
         self.failed_ip_checks = 0
 
         Window.clearcolor = (0.11, 0.11, 0.11, 1)
 
+        # Главный макет с жесткой привязкой к верху экрана
         root_layout = BoxLayout(
             orientation='vertical',
             size_hint=(1, 1),
@@ -714,7 +718,6 @@ class SmartHomeApp(App):
         labels_container.add_widget(self.assistant_label)
         root_layout.add_widget(labels_container)
 
-        # Контейнер для ламп
         lamps_container = GridLayout(cols=1, spacing=dp(10), size_hint_x=1, size_hint_y=None)
         lamps_container.bind(minimum_height=lamps_container.setter('height'))
 
@@ -724,7 +727,6 @@ class SmartHomeApp(App):
             (IMG_LAMP_3_OFF, IMG_LAMP_3_ON),
         ]
 
-        # Заполняем список ламп
         for idx, ch in enumerate(self.config_data.get("channels", [])):
             off_img, on_img = icon_pairs[idx] if idx < len(icon_pairs) else (IMG_LAMP_1_OFF, IMG_LAMP_1_ON)
             lamp = LampRow(ch["id"], off_img, on_img, lambda: f"http://{self.config_data.get('device_ip')}",
@@ -732,12 +734,11 @@ class SmartHomeApp(App):
             self.lamp_objects.append(lamp)
             lamps_container.add_widget(lamp)
 
-        # Скролл для ламп (теперь вне цикла, как и должно быть)
-        scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
+        # Найдите текущую строчку создания скролла и просто допишите в неё size_hint_y=1:
+        scroll = ScrollView(size_hint=(1, 1), size_hint_y=1, do_scroll_x=False, do_scroll_y=True)
         scroll.add_widget(lamps_container)
         root_layout.add_widget(scroll)
 
-        # Нижние кнопки управления
         btn_all_on = Button(
             text="ВКЛЮЧИТЬ ВСЕ",
             font_size='13sp',
@@ -745,8 +746,8 @@ class SmartHomeApp(App):
             background_normal='',
             background_color=(0, 0, 0, 0),
             color=(0.2, 0.85, 0.3, 1),
-            size_hint=(1, None),
-            height=dp(40),
+            size_hint=(1, None),  # <--- Исправлено с (1, 1)
+            height=dp(40),  # <--- Задана высота
             halign='center',
             valign='middle'
         )
@@ -760,8 +761,8 @@ class SmartHomeApp(App):
             background_normal='',
             background_color=(0, 0, 0, 0),
             color=(0.9, 0.2, 0.2, 1),
-            size_hint=(1, None),
-            height=dp(40),
+            size_hint=(1, None),  # <--- Исправлено с (1, 1)
+            height=dp(40),  # <--- Задана высота
             halign='center',
             valign='middle'
         )
@@ -780,70 +781,10 @@ class SmartHomeApp(App):
 
         return root_layout
 
-    def get_config_path(self):
-        base_dir = self.user_data_dir if hasattr(self, 'user_data_dir') else os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(base_dir, "config.json")
-
-    def load_config(self):
-        config_path = self.get_config_path()
-        default_config = {
-            "device_ip": "192.168.1.39",
-            "tts_enabled": True,
-            "wake_word": "джарвис",
-            "wake_response": "Слушаю",
-            "wake_timeout_sec": 120,
-            "channels": [
-                {"id": 4, "name": "Лампу 1"},
-                {"id": 5, "name": "Лампу 2"},
-                {"id": 0, "name": "Лампу 3"}
-            ],
-            "voice_commands": [],
-            "voice_responses": []
-        }
-
-        if not os.path.exists(config_path):
-            self.save_config(default_config)
-            return default_config
-
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Проверяем, все ли стандартные ключи есть в загруженном файле, если нет — добавляем
-            updated = False
-            for key, val in default_config.items():
-                if key not in data:
-                    data[key] = val
-                    updated = True
-
-            if updated:
-                self.save_config(data)
-
-            return data
-        except Exception:
-            return default_config
-
-    def save_config(self, config_data):
-        config_path = self.get_config_path()
-        try:
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, ensure_ascii=False, indent=4)
-            print(f"[CONFIG] Настройки сохранены: {config_path}")
-        except Exception as e:
-            print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
-
     def _start_assistant(self):
-        Clock.schedule_once(lambda dt: self._init_voice_assistant(), 0.1)
-
-    def _init_voice_assistant(self):
-        try:
-            self.assistant = VoiceAssistant(self, self.lamp_objects)
-            self.assistant.start_listening()
-            Clock.schedule_interval(self.assistant.check_activity_timeout, 1.0)
-            print("[ASSISTANT] Голосовой ассистент успешно запущен")
-        except Exception as e:
-            print(f"[ASSISTANT ERROR]: {e}")
-            self.update_assistant_status("Ассистент: Ошибка запуска", color=(0.9, 0.2, 0.2, 1))
+        self.assistant = VoiceAssistant(self, self.lamp_objects)
+        self.assistant.start_listening()
+        Clock.schedule_interval(self.assistant.check_activity_timeout, 1.0)
 
     @mainthread
     def set_wifi_status(self, is_connected: bool):
