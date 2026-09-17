@@ -631,9 +631,11 @@ class SmartHomeApp(App):
 
         Window.clearcolor = (0.11, 0.11, 0.11, 1)
 
+        # Главный макет с жесткой привязкой к верху экрана
         root_layout = BoxLayout(
             orientation='vertical',
             size_hint=(1, 1),
+            pos_hint={'top': 1, 'left': 1},  # <--- Вот это прижимает весь экран к верхней границе
             padding=[dp(15), dp(15), dp(15), dp(10)],
             spacing=dp(10)
         )
