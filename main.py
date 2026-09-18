@@ -332,24 +332,23 @@ class VoiceAssistant:
     def __init__(self, app, lamp_objects):
         self.app = app
         self.lamp_objects = lamp_objects
-        # Автоматический выбор правильного пути для ПК и Android
+
+        # Автоматический выбор пути для ПК и Android
         if platform == 'android':
             base_dir = os.path.dirname(os.path.abspath(__file__))
             self.MODEL_PATH = os.path.join(base_dir, "model", "vosk-model-small-ru-0.22")
         else:
             self.MODEL_PATH = "model/vosk-model-small-ru-0.22"
 
-        # Модель изначально пустая, чтобы не блокировать главный поток при старте на Android
+        # Модель изначально пустая
         self.model = None
-        self.q = queue.Queue()
+        self.q = queue.Queue(maxsize=50)  # Ограничиваем очередь, чтобы избежать OOM
         self.listening = False
-        self.is_recording_setting = False
-        self.stream = None
-
         self.is_active = False
         self.last_active_time = 0
+        self.is_recording_setting = False
+        self._audio_needs_restart = False  # Флаг контроля состояния аудио
 
-        # Асинхронная загрузка модели Vosk в фоне для стабильного запуска на смартфоне
         if HAS_VOSK and os.path.exists(self.MODEL_PATH):
             threading.Thread(target=self._load_model_background, daemon=True).start()
         else:
@@ -361,8 +360,6 @@ class VoiceAssistant:
             print("[VOSK] Загрузка модели в фоновом потоке...")
             self.model = Model(self.MODEL_PATH)
             print("[VOSK] Модель успешно загружена!")
-
-            # Как только модель загрузилась в фоне, запускаем прослушивание через Clock
             Clock.schedule_once(lambda dt: self.start_listening(), 0)
         except Exception as e:
             print(f"[VOSK ERROR]: {e}")
@@ -422,70 +419,106 @@ class VoiceAssistant:
                 print(f"[PC RECORD ERROR]: {e}")
                 self.app.update_assistant_status("Ассистент: Ошибка микрофона ПК", color=(0.9, 0.2, 0.2, 1))
 
-    def _android_record_loop(self):
-        if not HAS_ANDROID_AUDIO:
-            self.app.update_assistant_status("Ассистент: JNI Audio недоступен", color=(0.9, 0.2, 0.2, 1))
+    def restart_listening(self):
+        """Безопасный перезапуск цикла записи"""
+        if not self.listening:
             return
 
+        # Очищаем буфер перед повторным запуском
+        while not self.q.empty():
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                break
+
+        if platform == 'android':
+            self._audio_needs_restart = True
+
+    def _android_record_loop(self):
         sample_rate = 16000
         channel_config = AudioFormat.CHANNEL_IN_MONO
         audio_format = AudioFormat.ENCODING_PCM_16BIT
 
-        try:
-            min_buf_size = AudioRecord.getMinBufferSize(sample_rate, channel_config, audio_format)
-            buffer_size = max(min_buf_size, 4000)
+        while self.listening:
+            try:
+                min_buf_size = AudioRecord.getMinBufferSize(sample_rate, channel_config, audio_format)
+                buffer_size = max(min_buf_size * 2, 8000)
 
-            audio_record = AudioRecord(
-                AudioSource.MIC,
-                sample_rate,
-                channel_config,
-                audio_format,
-                buffer_size
-            )
+                audio_record = AudioRecord(
+                    AudioSource.MIC,
+                    sample_rate,
+                    channel_config,
+                    audio_format,
+                    buffer_size
+                )
 
-            audio_record.startRecording()
-            ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
-            self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+                audio_record.startRecording()
+                print("[ANDROID] Запись начата через Vosk+AudioRecord")
 
-            threading.Thread(target=self.processor_loop, daemon=True).start()
+                from jnius import byteArray
+                buf = byteArray(buffer_size)
 
-            from jnius import byteArray
-            buf = byteArray(2048)
+                while self.listening:
+                    if self._audio_needs_restart:
+                        break
 
-            while self.listening:
-                read_bytes = audio_record.read(buf, 0, len(buf))
-                if read_bytes > 0:
-                    raw_data = bytes(buf[:read_bytes])
-                    self.q.put(raw_data)
-                time.sleep(0.01)
+                    read_bytes = audio_record.read(buf, 0, buffer_size)
 
-            audio_record.stop()
-            audio_record.release()
-        except Exception as e:
-            print(f"[ANDROID RECORD LOOP ERROR]: {e}")
-            self.app.update_assistant_status("Ассистент: Ошибка микрофона Android", color=(0.9, 0.2, 0.2, 1))
+                    if read_bytes > 0:
+                        raw_data = bytes(buf[:read_bytes])
+                        try:
+                            self.q.put_nowait(raw_data)
+                        except queue.Full:
+                            pass
+                    elif read_bytes == AudioRecord.ERROR_INVALID_OPERATION:
+                        print("[ANDROID AUDIO] Ошибка инициализации, перезапуск...")
+                        self._audio_needs_restart = True
+                        break
+                    elif read_bytes == AudioRecord.ERROR_BAD_VALUE:
+                        time.sleep(0.1)
+                    else:
+                        time.sleep(0.005)
+
+            except Exception as e:
+                print(f"[ANDROID RECORD LOOP CRITICAL]: {e}")
+                time.sleep(1.0)
+            finally:
+                try:
+                    if 'audio_record' in locals() and audio_record is not None:
+                        if audio_record.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING:
+                            audio_record.stop()
+                        audio_record.release()
+                except Exception:
+                    pass
 
     def audio_callback(self, indata, frames, time_info, status):
-        self.q.put(bytes(indata))
+        try:
+            self.q.put_nowait(bytes(indata))
+        except queue.Full:
+            pass
 
     def processor_loop(self):
         if not HAS_VOSK or not self.model:
             return
-        recognizer = KaldiRecognizer(self.model, 16000)
-        while self.listening:
-            if self.is_recording_setting:
-                time.sleep(0.05)
-                continue
 
+        recognizer = KaldiRecognizer(self.model, 16000)
+
+        while self.listening:
             try:
                 data = self.q.get(timeout=1)
+
                 if recognizer.AcceptWaveform(data):
                     res = json.loads(recognizer.Result())
                     text = res.get('text', '').lower().strip()
                     if text:
                         self.process_command(text)
+                        recognizer.Reset()  # Обязательно сбрасываем состояние после фразы
+
             except queue.Empty:
                 continue
+            except Exception as e:
+                print(f"[VOSK PROCESSOR ERROR]: {e}")
+                time.sleep(0.1)
 
     def check_activity_timeout(self, dt=None):
         if not self.is_active:
@@ -504,6 +537,14 @@ class VoiceAssistant:
     def activate(self):
         self.is_active = True
         self.last_active_time = time.time()
+
+        # При активации Wake Word очищаем очередь от старых данных
+        while not self.q.empty():
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                break
+
         self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
 
     def get_custom_response(self, sub_action, channel_id=None):
