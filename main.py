@@ -344,6 +344,15 @@ class VoiceAssistant:
             self.MODEL_PATH = os.path.join(base_dir, "model", "vosk-model-small-ru-0.22")
         else:
             self.MODEL_PATH = "model/vosk-model-small-ru-0.22"
+            # === ВСТАВЛЯЙТЕ ОТЛАДКУ СЮДА ===
+            print(f"[VOSK] Путь к модели: {self.MODEL_PATH}")
+            print(f"[VOSK] Папка существует: {os.path.exists(self.MODEL_PATH)}")
+            if os.path.exists(self.MODEL_PATH):
+                print(f"[VOSK] Содержимое папки: {os.listdir(self.MODEL_PATH)}")
+            # ==============================
+
+            # А дальше идет сам вызов инициализации модели, например:
+            self.vosk_model = Model(self.MODEL_PATH)
 
         # Модель изначально пустая
         self.model = None
