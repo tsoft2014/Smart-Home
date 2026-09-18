@@ -16,13 +16,13 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 
 # (list) Явно разрешаем включить всю папку модели и её содержимое
-source.include_patterns = model/*,model/**/*
+source.include_patterns = model/*,model/am/*,model/conf/*,model/graph/*,model/ivector/*,model/res/*
 
 # (str) Версия приложения
 version = 1.0.0
 
 # (list) Зависимости проекта
-requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,sounddevice,hostpython3
+requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,hostpython3
 
 # (str) Ориентация экрана
 orientation = portrait
