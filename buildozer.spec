@@ -22,7 +22,7 @@ source.include_patterns = model/*,model/**/*
 version = 1.0.0
 
 # (list) Зависимости проекта
-requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk
+requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,sounddevice,hostpython3
 
 # (str) Ориентация экрана
 orientation = portrait
@@ -33,7 +33,8 @@ fullscreen = 0
 # --- Настройки Android ---
 
 # (list) Разрешения Android для работы сети и микрофона
-android.permissions = INTERNET, RECORD_AUDIO, MODIFY_AUDIO_SETTINGS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
+android.permissions = INTERNET, RECORD_AUDIO, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
+
 # (int) Target Android API
 android.api = 33
 
