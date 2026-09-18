@@ -46,12 +46,17 @@ else:
     HAS_ANDROID_AUDIO = False
 
 # Безопасный импорт sounddevice для ПК
-try:
-    import sounddevice as sd
-    HAS_SOUNDDEVICE = True
-except ImportError:
-    sd = None
-    HAS_SOUNDDEVICE = False
+# Безопасный импорт sounddevice только для ПК
+HAS_SOUNDDEVICE = False
+sd = None
+if platform != 'android':
+    try:
+        import sounddevice as sd
+        HAS_SOUNDDEVICE = True
+    except (ImportError, OSError) as e:
+        print(f"[PC SOUNDDEVICE INIT ERROR]: {e}")
+        sd = None
+        HAS_SOUNDDEVICE = False
 
 try:
     from vosk import Model, KaldiRecognizer
