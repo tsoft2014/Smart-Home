@@ -16,7 +16,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 
 # (list) Явно разрешаем включить всю папку модели и её содержимое
-source.include_patterns = model/*,model/am/*,model/conf/*,model/graph/*,model/ivector/*,model/res/*
+source.include_patterns = model/*,model/vosk-model-small-ru-0.22/*,model/vosk-model-small-ru-0.22/**/*
 
 # (str) Версия приложения
 version = 1.0.0
