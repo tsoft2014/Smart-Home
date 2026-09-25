@@ -1,10 +1,12 @@
 import os
+import zipfile
 import json
 import re
 import queue
 import threading
 import time
 import requests
+import shutil
 
 from kivy.config import Config
 
@@ -27,6 +29,15 @@ from kivy.core.window import Window
 from kivy.utils import platform
 from kivy.uix.relativelayout import RelativeLayout
 from kivy.graphics import Color, RoundedRectangle
+
+# Распаковываем vosk, если папка еще не распакована на устройстве
+current_dir = os.path.dirname(os.path.abspath(__file__))
+vosk_dir = os.path.join(current_dir, 'vosk')
+vosk_zip = os.path.join(current_dir, 'vosk.zip')
+
+if not os.path.exists(vosk_dir) and os.path.exists(vosk_zip):
+    with zipfile.ZipFile(vosk_zip, 'r') as zip_ref:
+        zip_ref.extractall(current_dir)
 
 # --- Размеры окна для тестов на ПК ---
 #Window.size = (380, 680)
@@ -67,6 +78,43 @@ except Exception as e:
     KaldiRecognizer = None
     HAS_VOSK = False
     print(f"[VOSK IMPORT CRITICAL ERROR] {type(e).__name__}: {e}")
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+if platform == 'android':
+    possible_paths = [
+        # Самый надежный вариант: рядом с текущим main.py внутри private.tar
+        os.path.join(current_dir, "model", "vosk-model-small-ru-0.22"),
+        # Текущая рабочая директория
+        os.path.join(os.getcwd(), "model", "vosk-model-small-ru-0.22"),
+    ]
+    # Безопасно добавляем user_data_dir, если app уже запущен
+    try:
+        from kivy.app import App
+        app = App.get_running_app()
+        if app and app.user_data_dir:
+            possible_paths.append(os.path.join(app.user_data_dir, "model", "vosk-model-small-ru-0.22"))
+    except Exception:
+        pass
+else:
+    possible_paths = ["model/vosk-model-small-ru-0.22"]
+
+# Ищем первый существующий путь
+model_path = None
+for path in possible_paths:
+    print(f"DEBUG_VOSK: Проверяем путь -> {path} (существует: {os.path.exists(path)})")
+    if os.path.exists(path):
+        model_path = path
+        break
+
+if model_path and HAS_VOSK:
+    try:
+        model = Model(model_path)
+        print(f"[VOSK DEBUG] Модель успешно загружена из: {model_path}")
+    except Exception as e:
+        print(f"[VOSK LOAD ERROR] {type(e).__name__}: {e}")
+else:
+    print("[VOSK ERROR] Не удалось найти папку модели ни по одному из путей!")
 
 tts_lock = threading.Lock()
 
@@ -340,6 +388,14 @@ class VoiceAssistant:
         self.app = app
         self.lamp_objects = lamp_objects
 
+        self.model = None
+        self.q = queue.Queue(maxsize=50)
+        self.listening = False
+        self.is_active = False
+        self.last_active_time = 0
+        self.is_recording_setting = False
+        self._audio_needs_restart = False
+
         if platform == 'android':
             app_dir = App.get_running_app().directory
             possible_paths = [
@@ -355,11 +411,12 @@ class VoiceAssistant:
             exists = os.path.exists(p)
             print(f"[VOSK SEARCH] Проверяем путь: {p} -> Существует: {exists}")
             if exists:
-                self.MODEL_PATH = p
+                # Сразу преобразуем найденный рабочий путь в абсолютный
+                self.MODEL_PATH = os.path.abspath(p)
                 break
 
         print(f"[VOSK DEBUG] HAS_VOSK = {HAS_VOSK}")
-        print(f"[VOSK DEBUG] Итоговый MODEL_PATH = {self.MODEL_PATH}")
+        print(f"[VOSK DEBUG] Итоговый абсолютный MODEL_PATH = {self.MODEL_PATH}")
 
         self.app.update_assistant_status("Ассистент: Загрузка модели...", color=(0.9, 0.8, 0.2, 1))
 
@@ -369,25 +426,13 @@ class VoiceAssistant:
             print("[VOSK ERROR] Условие загрузки не выполнено! Либо нет Vosk, либо папки модели.")
             self.app.update_assistant_status("Ассистент: Нет модели Vosk", color=(0.9, 0.2, 0.2, 1))
 
-        self.model = None
-        self.q = queue.Queue(maxsize=50)
-        self.listening = False
-        self.is_active = False
-        self.last_active_time = 0
-        self.is_recording_setting = False
-        self._audio_needs_restart = False
-
-        self.app.update_assistant_status("Ассистент: Загрузка модели...", color=(0.9, 0.8, 0.2, 1))
-
-        if HAS_VOSK and os.path.exists(self.MODEL_PATH):
-            threading.Thread(target=self._load_model_background, daemon=True).start()
-        else:
-            self.app.update_assistant_status("Ассистент: Нет модели Vosk", color=(0.9, 0.2, 0.2, 1))
-
     def _load_model_background(self):
         try:
             print("[VOSK] Загрузка модели в фоновом потоке...")
-            self.model = Model(self.MODEL_PATH)
+            # Применяем абсолютный путь для корректной работы Vosk на Android
+            abs_model_path = os.path.abspath(self.MODEL_PATH)
+            self.model = Model(abs_model_path)
+
             print("[VOSK] Модель успешно загружена!")
             Clock.schedule_once(lambda dt: self.start_listening(), 0)
         except Exception as e:
@@ -848,6 +893,49 @@ class SmartHomeApp(App):
         Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
 
         return root_layout
+
+    def prepare_local_model(self):
+        if platform == 'android':
+            target_dir = os.path.join(self.user_data_dir, "model")
+            model_folder = os.path.join(target_dir, "vosk-model-small-ru-0.22")
+
+            # Если папка с моделью еще не распакована на устройстве:
+            if not os.path.exists(model_folder):
+                print("[SETUP] Распаковка модели из архива...")
+                Clock.schedule_once(lambda dt: setattr(self.assistant_label, 'text', 'Ассистент: Распаковка модели...'),
+                                    0)
+
+                os.makedirs(target_dir, exist_ok=True)
+                zip_path = os.path.join(self.directory, "vosk-model-small-ru-0.22.zip")
+
+                if os.path.exists(zip_path):
+                    try:
+                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                            zip_ref.extractall(target_dir)
+                        print("[SETUP] Модель успешно распакована!")
+                    except Exception as e:
+                        print(f"[SETUP ERROR] Ошибка распаковки архива: {e}")
+                else:
+                    print(f"[SETUP ERROR] Архив не найден в APK по пути: {zip_path}")
+
+            self.model_path = model_folder
+        else:
+            # Для отладки на компьютере
+            self.model_path = "model/vosk-model-small-ru-0.22"
+
+        # Переходим к инициализации голосового ассистента
+        Clock.schedule_once(lambda dt: self.init_voice_assistant(), 0)
+
+    def init_voice_assistant(self):
+        try:
+            from vosk import Model
+            print(f"[VOSK] Загрузка модели из: {self.model_path}")
+            self.model = Model(self.model_path)
+            Clock.schedule_once(lambda dt: setattr(self.assistant_label, 'text', 'Ассистент: Готов к работе'), 0)
+            print("[VOSK] Модель успешно загружена!")
+        except Exception as e:
+            print(f"[VOSK ERROR] Не удалось создать модель: {e}")
+            Clock.schedule_once(lambda dt: setattr(self.assistant_label, 'text', 'Ассистент: Ошибка инициализации'), 0)
 
     def _start_assistant(self):
         self.assistant = VoiceAssistant(self, self.lamp_objects)
