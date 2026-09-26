@@ -529,7 +529,7 @@ class VoiceAssistant:
                 audio_record.startRecording()
                 print("[ANDROID] Запись начата через Vosk+AudioRecord")
 
-                buf = byteArray(buffer_size)
+                buf = bytearray(buffer_size)
 
                 while self.listening:
                     if self._audio_needs_restart:
@@ -896,32 +896,15 @@ class SmartHomeApp(App):
 
     def prepare_local_model(self):
         if platform == 'android':
-            target_dir = os.path.join(self.user_data_dir, "model")
-            model_folder = os.path.join(target_dir, "vosk-model-small-ru-0.22")
-
-            # Если папка с моделью еще не распакована на устройстве:
-            if not os.path.exists(model_folder):
-                print("[SETUP] Распаковка модели из архива...")
-                Clock.schedule_once(lambda dt: setattr(self.assistant_label, 'text', 'Ассистент: Распаковка модели...'),
-                                    0)
-
-                os.makedirs(target_dir, exist_ok=True)
-                zip_path = os.path.join(self.directory, "vosk-model-small-ru-0.22.zip")
-
-                if os.path.exists(zip_path):
-                    try:
-                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                            zip_ref.extractall(target_dir)
-                        print("[SETUP] Модель успешно распакована!")
-                    except Exception as e:
-                        print(f"[SETUP ERROR] Ошибка распаковки архива: {e}")
-                else:
-                    print(f"[SETUP ERROR] Архив не найден в APK по пути: {zip_path}")
-
-            self.model_path = model_folder
+            # На телефоне распакованная модель лежит внутри рабочей папки приложения
+            # (Buildozer автоматически копирует все файлы из папки model/ внутрь APK)
+            self.model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model",
+                                           "vosk-model-small-ru-0.22")
         else:
             # Для отладки на компьютере
             self.model_path = "model/vosk-model-small-ru-0.22"
+
+        print(f"[SETUP] Путь к модели: {self.model_path}")
 
         # Переходим к инициализации голосового ассистента
         Clock.schedule_once(lambda dt: self.init_voice_assistant(), 0)
