@@ -33,9 +33,9 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython
 
-      - name: Download Vosk model archive
-        run: |
-          wget -q https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip -O vosk-model-small-ru-0.22.zip
+      #- name: Download Vosk model archive
+      #  run: |
+      #    wget -q https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip -O vosk-model-small-ru-0.22.zip
 
       - name: Build APK with Buildozer
         run: |
