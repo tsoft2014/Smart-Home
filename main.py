@@ -138,7 +138,6 @@ if platform == 'android':
                 global _android_tts
                 if status == TextToSpeech.SUCCESS:
                     try:
-                        # Создаем русскую локаль через конструктор
                         ru_locale = Locale("ru", "RU")
                         result = _android_tts.setLanguage(ru_locale)
                         if result == TextToSpeech.LANG_MISSING_DATA or result == TextToSpeech.LANG_NOT_SUPPORTED:
@@ -151,7 +150,6 @@ if platform == 'android':
                     print("[ANDROID TTS] Ошибка инициализации нативного движка")
 
 
-        # Создаем экземпляр с передачей слушателя
         _tts_listener = TTSListener()
         _android_tts = TextToSpeech(PythonActivity.mActivity, _tts_listener)
 
@@ -174,8 +172,10 @@ def speak(text, on_done_callback=None):
             if platform == 'android':
                 try:
                     if _android_tts is not None:
-                        # 0 — это TextToSpeech.QUEUE_FLUSH (прерывает прошлую речь)
-                        _android_tts.speak(text, 0, None, None)
+                        # Используем HashMap для правильной сигнатуры под Android
+                        HashMap = autoclass('java.util.HashMap')
+                        params = HashMap()
+                        _android_tts.speak(text, 0, params)
                     else:
                         print("[ANDROID TTS ERROR]: Движок не инициализирован")
                 except Exception as e:
