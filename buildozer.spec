@@ -70,8 +70,8 @@ android.api = 33
 android.minapi = 21
 
 # Жесткая фиксация версий инструментов, чтобы Buildozer не искал их наугад
-android.sdk = 33
-android.ndk = 25b
+#android.sdk = 33
+#android.ndk = 25b
 
 # (list) Поддерживаемые архитектуры процессоров
 android.archs = arm64-v8a
