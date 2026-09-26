@@ -19,8 +19,8 @@ source.dir = .
 #source.include_exts = py,png,jpg,kv,atlas,mdl,fst,int,dubm,ie,mat,conf,stats,txt
 # (list) Расширения файлов для включения в APK
 #source.include_exts = py,png,jpg,kv,atlas,json,so,mdl,fst,int,dubm,ie,mat,conf,stats,txt
-#source.include_exts = py,png,jpg,kv,atlas,json,so,mdl,fst,int,dubm,ie,mat,conf,stats,txt,zip
-source.include_exts = py,png,jpg,kv,atlas,zip
+source.include_exts = py,png,jpg,kv,atlas,json,so,mdl,fst,int,dubm,ie,mat,conf,stats,txt,zip
+#source.include_exts = py,png,jpg,kv,atlas,zip
 
 # (list) Явно разрешаем включить всю папку модели и её содержимое
 #source.include_patterns = model/*,model/vosk-model-small-ru-0.22/*,model/vosk-model-small-ru-0.22/**/*
@@ -30,8 +30,8 @@ source.include_exts = py,png,jpg,kv,atlas,zip
 #source.include_patterns = model/*, model/**/*
 #source.include_patterns = model/*, model/**/*', vosk/*, vosk/**/*
 #source.include_patterns = model/**
-source.include_patterns = vosk-model-small-ru-0.22.zip, vosk.zip, libs/*, libs/**/*
-#source.include_patterns = model.zip, vosk.zip, libs/*, libs/**/*
+#source.include_patterns = vosk-model-small-ru-0.22.zip, vosk.zip, libs/*, libs/**/*
+source.include_patterns = model/*, model/**, vosk.zip, libs/*, libs/**/*
 
 # (str) Версия приложения
 version = 1.0.0
