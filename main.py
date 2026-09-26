@@ -516,25 +516,36 @@ class VoiceAssistant:
         while self.listening:
             try:
                 min_buf_size = AudioRecord.getMinBufferSize(sample_rate, channel_config, audio_format)
-                buffer_size = max(min_buf_size * 2, 8000)
+                if min_buf_size <= 0:
+                    min_buf_size = 4096
+
+                # Делаем размер буфера оптимальным для обработки по 100-200 мс (например, 3200 байт для 16-bit PCM)
+                buffer_size = 3200
 
                 audio_record = AudioRecord(
-                    AudioSource.MIC,
+                    AudioSource.VOICE_RECOGNITION,  # Изменили с MIC на VOICE_RECOGNITION!
                     sample_rate,
                     channel_config,
                     audio_format,
-                    buffer_size
+                    max(min_buf_size, buffer_size)
                 )
 
+                if audio_record.getState() != AudioRecord.STATE_INITIALIZED:
+                    print("[ANDROID AUDIO] Ошибка: AudioRecord не инициализирован!")
+                    time.sleep(1.0)
+                    continue
+
                 audio_record.startRecording()
-                print("[ANDROID] Запись начата через Vosk+AudioRecord")
+                print("[ANDROID] Запись начата через Vosk + VOICE_RECOGNITION")
 
                 buf = bytearray(buffer_size)
 
                 while self.listening:
                     if self._audio_needs_restart:
+                        self._audio_needs_restart = False
                         break
 
+                    # Читаем фиксированными небольшими порциями
                     read_bytes = audio_record.read(buf, 0, buffer_size)
 
                     if read_bytes > 0:
@@ -544,13 +555,13 @@ class VoiceAssistant:
                         except queue.Full:
                             pass
                     elif read_bytes == AudioRecord.ERROR_INVALID_OPERATION:
-                        print("[ANDROID AUDIO] Ошибка инициализации, перезапуск...")
+                        print("[ANDROID AUDIO] Ошибка invalid operation, перезапуск...")
                         self._audio_needs_restart = True
                         break
                     elif read_bytes == AudioRecord.ERROR_BAD_VALUE:
-                        time.sleep(0.1)
+                        time.sleep(0.05)
                     else:
-                        time.sleep(0.005)
+                        time.sleep(0.01)
 
             except Exception as e:
                 print(f"[ANDROID RECORD LOOP CRITICAL]: {e}")
