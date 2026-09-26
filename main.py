@@ -118,23 +118,43 @@ else:
 
 tts_lock = threading.Lock()
 
-# Предварительная инициализация Android TTS на уровне модуля (чтобы не плодить объекты)
+# Инициализация Android TTS с правильным callback и Locale
 _android_tts = None
 if platform == 'android':
     try:
-        from jnius import autoclass
+        from jnius import autoclass, java_method, PythonJavaClass
 
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
         TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
         Locale = autoclass('java.util.Locale')
 
 
-        def _on_init(status):
-            pass
+        class TTSListener(PythonJavaClass):
+            __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnInitListener']
+            __javachars__ = None
+
+            @java_method('(I)V')
+            def onInit(self, status):
+                global _android_tts
+                if status == TextToSpeech.SUCCESS:
+                    try:
+                        # Создаем русскую локаль через конструктор
+                        ru_locale = Locale("ru", "RU")
+                        result = _android_tts.setLanguage(ru_locale)
+                        if result == TextToSpeech.LANG_MISSING_DATA or result == TextToSpeech.LANG_NOT_SUPPORTED:
+                            print("[ANDROID TTS] Русский язык не поддерживается на устройстве")
+                        else:
+                            print("[ANDROID TTS] Движок успешно инициализирован и настроен!")
+                    except Exception as e:
+                        print(f"[ANDROID TTS CONFIG ERROR]: {e}")
+                else:
+                    print("[ANDROID TTS] Ошибка инициализации нативного движка")
 
 
-        _android_tts = TextToSpeech(PythonActivity.mActivity, None)
-        _android_tts.setLanguage(Locale.RUSSIAN)
+        # Создаем экземпляр с передачей слушателя
+        _tts_listener = TTSListener()
+        _android_tts = TextToSpeech(PythonActivity.mActivity, _tts_listener)
+
     except Exception as e:
         print(f"[ANDROID TTS INIT ERROR]: {e}")
         _android_tts = None
