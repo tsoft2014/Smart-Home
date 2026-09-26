@@ -118,6 +118,27 @@ else:
 
 tts_lock = threading.Lock()
 
+# Предварительная инициализация Android TTS на уровне модуля (чтобы не плодить объекты)
+_android_tts = None
+if platform == 'android':
+    try:
+        from jnius import autoclass
+
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
+        Locale = autoclass('java.util.Locale')
+
+
+        def _on_init(status):
+            pass
+
+
+        _android_tts = TextToSpeech(PythonActivity.mActivity, None)
+        _android_tts.setLanguage(Locale.RUSSIAN)
+    except Exception as e:
+        print(f"[ANDROID TTS INIT ERROR]: {e}")
+        _android_tts = None
+
 
 def speak(text, on_done_callback=None):
     if not text or not str(text).strip():
@@ -132,9 +153,11 @@ def speak(text, on_done_callback=None):
         with tts_lock:
             if platform == 'android':
                 try:
-                    import importlib
-                    plyer_tts = importlib.import_module('plyer.tts')
-                    plyer_tts.speak(text)
+                    if _android_tts is not None:
+                        # 0 — это TextToSpeech.QUEUE_FLUSH (прерывает прошлую речь)
+                        _android_tts.speak(text, 0, None, None)
+                    else:
+                        print("[ANDROID TTS ERROR]: Движок не инициализирован")
                 except Exception as e:
                     print(f"[ANDROID TTS ERROR]: {e}")
             else:
@@ -167,7 +190,6 @@ def speak(text, on_done_callback=None):
                 on_done_callback()
 
     threading.Thread(target=_say_thread, daemon=True).start()
-
 
 def format_temperature_speech(temp_value):
     try:
