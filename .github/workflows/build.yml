@@ -42,8 +42,10 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
+          sudo apt-get clean
+          sudo apt-get update -y
+          sudo apt-get install -y --fix-missing \
             git \
             zip \
             unzip \
@@ -63,7 +65,7 @@ jobs:
             zlib1g
           python3 -m pip install --upgrade "pip<24.0" "setuptools<69.0.0"
           python3 -m pip install "buildozer==1.5.0" "cython==0.29.36"
-
+          
       - name: Clean Broken Buildozer Cache
         run: |
           rm -rf .buildozer
