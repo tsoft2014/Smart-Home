@@ -69,6 +69,10 @@ android.api = 33
 # (int) Минимальная поддерживаемая версия Android API (Android 5.0+)
 android.minapi = 21
 
+# Жесткая фиксация версий инструментов, чтобы Buildozer не искал их наугад
+android.sdk = 33
+android.ndk = 25b
+
 # (list) Поддерживаемые архитектуры процессоров
 android.archs = arm64-v8a
 
