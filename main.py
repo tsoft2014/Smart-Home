@@ -484,6 +484,9 @@ class VoiceAssistant:
 
     def speak(self, text):
         if text and self.app.config_data.get("tts_enabled", True):
+            # Включаем флаг блокировки: ассистент говорит, микрофон не слушает
+            self.is_speaking = True
+            
             self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
 
             while not self.q.empty():
@@ -498,6 +501,9 @@ class VoiceAssistant:
                         self.q.get_nowait()
                     except queue.Empty:
                         break
+
+                # Снимаем блокировку: ассистент закончил говорить, можно снова слушать
+                self.is_speaking = False
 
                 if self.is_active:
                     self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
