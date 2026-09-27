@@ -429,6 +429,7 @@ class VoiceAssistant:
     def __init__(self, app, lamp_objects):
         self.app = app
         self.lamp_objects = lamp_objects
+        self.is_speaking = False  # <--- Добавили флаг блокировки речи
 
         self.model = None
         self.q = queue.Queue(maxsize=50)
@@ -486,7 +487,7 @@ class VoiceAssistant:
         if text and self.app.config_data.get("tts_enabled", True):
             # Включаем флаг блокировки: ассистент говорит, микрофон не слушает
             self.is_speaking = True
-            
+
             self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
 
             while not self.q.empty():
@@ -562,6 +563,23 @@ class VoiceAssistant:
         audio_format = AudioFormat.ENCODING_PCM_16BIT
 
         while self.listening:
+            if self._audio_needs_restart:
+                self._audio_needs_restart = False
+                break
+
+            # ЕСЛИ АССИСТЕНТ ГОВОРИТ — НЕ ЗАПИСЫВАЕМ МИКРОФОН (ИЗБАВЛЯЕМСЯ ОТ ЭХА)
+            if getattr(self, 'is_speaking', False):
+                time.sleep(0.1)
+                # Очищаем очередь на всякий случай, чтобы там не копился мусор
+                while not self.q.empty():
+                    try:
+                        self.q.get_nowait()
+                    except queue.Empty:
+                        break
+                continue
+
+            read_bytes = audio_record.read(buf, 0, buffer_size)
+            # ... дальше ваш код чтения ...
             try:
                 min_buf_size = AudioRecord.getMinBufferSize(sample_rate, channel_config, audio_format)
                 if min_buf_size <= 0:
@@ -624,11 +642,15 @@ class VoiceAssistant:
                     pass
 
     def audio_callback(self, indata, frames, time_info, status):
+        # Если ассистент говорит, игнорируем входящий звук с микрофона
+        if getattr(self, 'is_speaking', False):
+            return
+
         try:
             self.q.put_nowait(bytes(indata))
         except queue.Full:
             pass
-
+        
     def processor_loop(self):
         if not HAS_VOSK or not self.model:
             return
