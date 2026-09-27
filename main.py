@@ -485,25 +485,27 @@ class VoiceAssistant:
 
     def speak(self, text):
         if text and self.app.config_data.get("tts_enabled", True):
-            self.is_speaking = True  # Включаем блокировку
-            print(f"[TTS LOCK]: Включена блокировка микрофона (ассистент говорит)")
-
-            self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
-
+            # Сначала чистим очередь от старых данных
             while not self.q.empty():
                 try:
                     self.q.get_nowait()
                 except queue.Empty:
                     break
 
+            self.is_speaking = True
+            print(f"[TTS LOCK]: Включена блокировка микрофона (ассистент говорит)")
+
+            self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
+
             def restore_status():
+                # На всякий случай дочищаем очередь после окончания речи
                 while not self.q.empty():
                     try:
                         self.q.get_nowait()
                     except queue.Empty:
                         break
 
-                self.is_speaking = False  # Снимаем блокировку
+                self.is_speaking = False
                 print(f"[TTS LOCK]: Блокировка снята, микрофон снова слушает")
 
                 if self.is_active:
@@ -600,13 +602,22 @@ class VoiceAssistant:
 
                     # --- ВОТ ЗДЕСЬ ПРАВИЛЬНОЕ МЕСТО ДЛЯ БЛОКИРОВКИ ---
                     # Если ассистент говорит, временно не читаем микрофон и чистим очередь
+                    # Полная пауза чтения и сброс буфера, пока ассистент говорит
                     if getattr(self, 'is_speaking', False):
+                        # Не просто спим, а даем системе обработать события
+                        Clock.schedule_once(lambda dt: None, 0)
                         time.sleep(0.05)
+
+                        # Агрессивно очищаем очередь, чтобы распознанный текст не попал в processor_loop
+                        cleared = 0
                         while not self.q.empty():
                             try:
                                 self.q.get_nowait()
+                                cleared += 1
                             except queue.Empty:
                                 break
+                        if cleared > 0:
+                            print(f"[ANDROID AUDIO] Сброшено {cleared} пакетов из очереди во время речи")
                         continue
                     # ------------------------------------------------
 
