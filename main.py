@@ -180,12 +180,6 @@ def speak(text, on_done_callback=None):
                         print("[ANDROID TTS ERROR]: Движок не инициализирован")
                 except Exception as e:
                     print(f"[ANDROID TTS ERROR]: {e}")
-
-                # --- ЧЕСТНАЯ ПАУЗА ДЛЯ ANDROID (пока движок реально говорит) ---
-                text_len = len(text)
-                estimated_duration = max(1.5, (text_len / 10.0) + 0.8)
-                time.sleep(estimated_duration)
-
             else:
                 pythoncom_imported = False
                 try:
@@ -200,7 +194,7 @@ def speak(text, on_done_callback=None):
                     engine = pyttsx3.init()
                     engine.setProperty('rate', 170)
                     engine.say(text)
-                    engine.runAndWait()  # На ПК runAndWait блокирует поток до полного окончания речи, тут всё честно
+                    engine.runAndWait()
                     engine.stop()
                 except Exception as e:
                     print(f"[PC TTS ERROR]: {e}")
@@ -212,7 +206,6 @@ def speak(text, on_done_callback=None):
                         except Exception:
                             pass
 
-                # И только теперь, когда фраза на Android точно отзвучала, вызываем callback
             if on_done_callback:
                 on_done_callback()
 
@@ -490,73 +483,96 @@ class VoiceAssistant:
             Clock.schedule_once(
                 lambda dt: self.app.update_assistant_status("Ошибка загрузки модели", color=(1, 0.2, 0.2, 1)), 0)
 
-    def speak(self, text):
+    def speak(self, text, on_done_callback=None):
         if not text or not str(text).strip():
+            if on_done_callback:
+                on_done_callback()
             return
 
-        # Защита от повторного вызова, если ассистент уже говорит или находится в фазе блокировки эха
-        if self.is_speaking:
+        if getattr(self, 'is_speaking', False):
             print("[TTS] Попытка вложенного вызова заблокирована")
+            if on_done_callback:
+                on_done_callback()
             return
 
         text = str(text).strip()
         print(f"[TTS WORK]: Озвучиваю -> '{text}'")
 
-        def _say_thread():
+        # Передаем callback внутрь потока через параметр функции
+        def _say_thread(cb=on_done_callback):
             with tts_lock:
                 self.is_speaking = True
-                self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
 
-                # Полная очистка очереди перед началом фразы (убираем старые аудиоданные)
+                # Полностью очищаем очередь перед началом речи
                 while not self.q.empty():
                     try:
                         self.q.get_nowait()
                     except queue.Empty:
                         break
 
-                android_was_active = self.is_active
-                wake_word = (self.app.config_data.get("wake_word") or "джарвис").lower()
-
                 if platform == 'android':
                     try:
-                        HashMap = autoclass('java.util.HashMap')
-                        params = HashMap()
-                        _android_tts.speak(text, 0, params)
+                        if _android_tts is not None:
+                            HashMap = autoclass('java.util.HashMap')
+                            params = HashMap()
+                            _android_tts.speak(text, 0, params)
+                        else:
+                            print("[ANDROID TTS ERROR]: Движок не инициализирован")
                     except Exception as e:
                         print(f"[ANDROID TTS ERROR]: {e}")
                 else:
-                    import pyttsx3
-                    engine = pyttsx3.init()
-                    engine.setProperty('rate', 170)
-                    engine.say(text)
-                    engine.runAndWait()
-                    engine.stop()
+                    pythoncom_imported = False
+                    engine = None
+                    try:
+                        try:
+                            import pythoncom
+                            pythoncom.CoInitialize()
+                            pythoncom_imported = True
+                        except ImportError:
+                            pass
 
-                    # ДИНАМИЧЕСКИЙ РАСЧЕТ ПАУЗЫ БЛОКИРОВКИ ЭХА
-                    text_len = len(text)
-                    estimated_duration = max(1.5, (text_len / 10.0) + 0.8)
+                        import pyttsx3
+                        engine = pyttsx3.init()
+                        engine.setProperty('rate', 170)
+                        engine.say(text)
+                        engine.runAndWait()
+                        engine.stop()
+                    except Exception as e:
+                        print(f"[PC TTS ERROR]: {e}")
+                    finally:
+                        # Безопасно очищаем движок, чтобы избежать ошибок памяти (0xC0000005)
+                        try:
+                            if engine:
+                                del engine
+                        except Exception:
+                            pass
 
-                    print(f"[TTS PROTECTION] Блокировка эха на {estimated_duration:.1f} сек для фразы: '{text}'")
-
-                    end_time = time.time() + estimated_duration
-                    while time.time() < end_time:
-                        if self._audio_needs_restart:
-                            break
-                        time.sleep(0.05)
-                        # Продолжаем дочищать очередь на случай, если звук все же попал туда
-                        while not self.q.empty():
+                        if pythoncom_imported:
                             try:
-                                self.q.get_nowait()
-                            except queue.Empty:
-                                break
+                                import pythoncom
+                                pythoncom.CoUninitialize()
+                            except Exception:
+                                pass
 
-                # Восстанавливаем статус работы
+                # --- ЗАЩИТА ОТ ЭХА И ПОВТОРЕНИЙ ---
+                text_len = len(text)
+                estimated_duration = max(2.0, (text_len / 8.0) + 1.2)
+
+                end_time = time.time() + estimated_duration
+                while time.time() < end_time:
+                    time.sleep(0.05)
+                    while not self.q.empty():
+                        try:
+                            self.q.get_nowait()
+                        except queue.Empty:
+                            break
+
+                self.ignore_until = time.time() + 1.5
                 self.is_speaking = False
-                if android_was_active and not self._audio_needs_restart:
-                    self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
-                else:
-                    ww_cap = wake_word.capitalize()
-                    self.app.update_assistant_status(f"Ассистент: Ожидание («{ww_cap}»)", color=(0.6, 0.6, 0.6, 1))
+                # ----------------------------------
+
+                if cb:
+                    cb()
 
         threading.Thread(target=_say_thread, daemon=True).start()
 
