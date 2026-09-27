@@ -484,37 +484,69 @@ class VoiceAssistant:
                 lambda dt: self.app.update_assistant_status("Ошибка загрузки модели", color=(1, 0.2, 0.2, 1)), 0)
 
     def speak(self, text):
-        if text and self.app.config_data.get("tts_enabled", True):
-            # Сначала чистим очередь от старых данных
-            while not self.q.empty():
-                try:
-                    self.q.get_nowait()
-                except queue.Empty:
-                    break
+        if not text or not str(text).strip():
+            return
 
-            self.is_speaking = True
-            print(f"[TTS LOCK]: Включена блокировка микрофона (ассистент говорит)")
+        # Защита от повторного вызова, если ассистент уже говорит или находится в фазе блокировки эха
+        if self.is_speaking:
+            print("[TTS] Попытка вложенного вызова заблокирована")
+            return
 
-            self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
+        text = str(text).strip()
+        print(f"[TTS WORK]: Озвучиваю -> '{text}'")
 
-            def restore_status():
-                # На всякий случай дочищаем очередь после окончания речи
+        def _say_thread():
+            with tts_lock:
+                self.is_speaking = True
+                self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
+
+                # Полная очистка очереди перед началом фразы (убираем старые аудиоданные)
                 while not self.q.empty():
                     try:
                         self.q.get_nowait()
                     except queue.Empty:
                         break
 
-                self.is_speaking = False
-                print(f"[TTS LOCK]: Блокировка снята, микрофон снова слушает")
+                android_was_active = self.is_active
+                wake_word = (self.app.config_data.get("wake_word") or "джарвис").lower()
 
-                if self.is_active:
+                if platform == 'android':
+                    try:
+                        HashMap = autoclass('java.util.HashMap')
+                        params = HashMap()
+                        _android_tts.speak(text, 0, params)
+                    except Exception as e:
+                        print(f"[ANDROID TTS ERROR]: {e}")
+                else:
+                    import pyttsx3
+                    engine = pyttsx3.init()
+                    engine.setProperty('rate', 170)
+                    engine.say(text)
+                    engine.runAndWait()
+                    engine.stop()
+
+                # ЖЕСТКАЯ ПАУЗА БЛОКИРОВКИ ПОСЛЕ РЕЧИ (защита от акустического эха)
+                end_time = time.time() + 0.6
+                while time.time() < end_time:
+                    if self._audio_needs_restart:
+                        break
+                    time.sleep(0.05)
+                    # Продолжаем дочищать очередь на случай, если звук все же попал туда
+                    while not self.q.empty():
+                        try:
+                            self.q.get_nowait()
+                        except queue.Empty:
+                            break
+
+                # Восстанавливаем статус работы
+                self.is_speaking = False
+                if android_was_active and not self._audio_needs_restart:
                     self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
                 else:
-                    ww = self.app.config_data.get("wake_word", "джарвис").capitalize()
-                    self.app.update_assistant_status(f"Ассистент: Ожидание («{ww}»)", color=(0.6, 0.6, 0.6, 1))
+                    ww_cap = wake_word.capitalize()
+                    self.app.update_assistant_status(f"Ассистент: Ожидание («{ww_cap}»)", color=(0.6, 0.6, 0.6, 1))
 
-            speak(text, on_done_callback=restore_status)
+        threading.Thread(target=_say_thread, daemon=True).start()
 
     def start_listening(self):
         if not HAS_VOSK or not self.model:
@@ -622,6 +654,12 @@ class VoiceAssistant:
                     # ------------------------------------------------
 
                     # Читаем фиксированными небольшими порциями
+                    # Если ассистент говорит, не трогаем аппаратный буфер вообще
+                    if getattr(self, 'is_speaking', False):
+                        time.sleep(0.05)
+                        continue
+
+                    # Читаем только если мы молчим
                     read_bytes = audio_record.read(buf, 0, buffer_size)
 
                     if read_bytes > 0:
