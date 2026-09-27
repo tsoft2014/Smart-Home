@@ -180,6 +180,12 @@ def speak(text, on_done_callback=None):
                         print("[ANDROID TTS ERROR]: Движок не инициализирован")
                 except Exception as e:
                     print(f"[ANDROID TTS ERROR]: {e}")
+
+                # --- ЧЕСТНАЯ ПАУЗА ДЛЯ ANDROID (пока движок реально говорит) ---
+                text_len = len(text)
+                estimated_duration = max(1.5, (text_len / 10.0) + 0.8)
+                time.sleep(estimated_duration)
+
             else:
                 pythoncom_imported = False
                 try:
@@ -194,7 +200,7 @@ def speak(text, on_done_callback=None):
                     engine = pyttsx3.init()
                     engine.setProperty('rate', 170)
                     engine.say(text)
-                    engine.runAndWait()
+                    engine.runAndWait()  # На ПК runAndWait блокирует поток до полного окончания речи, тут всё честно
                     engine.stop()
                 except Exception as e:
                     print(f"[PC TTS ERROR]: {e}")
@@ -206,6 +212,7 @@ def speak(text, on_done_callback=None):
                         except Exception:
                             pass
 
+                # И только теперь, когда фраза на Android точно отзвучала, вызываем callback
             if on_done_callback:
                 on_done_callback()
 
