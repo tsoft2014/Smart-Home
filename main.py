@@ -525,18 +525,23 @@ class VoiceAssistant:
                     engine.runAndWait()
                     engine.stop()
 
-                # ЖЕСТКАЯ ПАУЗА БЛОКИРОВКИ ПОСЛЕ РЕЧИ (защита от акустического эха)
-                end_time = time.time() + 0.6
-                while time.time() < end_time:
-                    if self._audio_needs_restart:
-                        break
-                    time.sleep(0.05)
-                    # Продолжаем дочищать очередь на случай, если звук все же попал туда
-                    while not self.q.empty():
-                        try:
-                            self.q.get_nowait()
-                        except queue.Empty:
+                    # ДИНАМИЧЕСКИЙ РАСЧЕТ ПАУЗЫ БЛОКИРОВКИ ЭХА
+                    text_len = len(text)
+                    estimated_duration = max(1.5, (text_len / 10.0) + 0.8)
+
+                    print(f"[TTS PROTECTION] Блокировка эха на {estimated_duration:.1f} сек для фразы: '{text}'")
+
+                    end_time = time.time() + estimated_duration
+                    while time.time() < end_time:
+                        if self._audio_needs_restart:
                             break
+                        time.sleep(0.05)
+                        # Продолжаем дочищать очередь на случай, если звук все же попал туда
+                        while not self.q.empty():
+                            try:
+                                self.q.get_nowait()
+                            except queue.Empty:
+                                break
 
                 # Восстанавливаем статус работы
                 self.is_speaking = False
