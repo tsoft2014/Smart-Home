@@ -485,8 +485,8 @@ class VoiceAssistant:
 
     def speak(self, text):
         if text and self.app.config_data.get("tts_enabled", True):
-            # Включаем флаг блокировки: ассистент говорит, микрофон не слушает
-            self.is_speaking = True
+            self.is_speaking = True  # Включаем блокировку
+            print(f"[TTS LOCK]: Включена блокировка микрофона (ассистент говорит)")
 
             self.app.update_assistant_status(f"Ответ: «{text}»", color=(0.9, 0.8, 0.2, 1))
 
@@ -503,8 +503,8 @@ class VoiceAssistant:
                     except queue.Empty:
                         break
 
-                # Снимаем блокировку: ассистент закончил говорить, можно снова слушать
-                self.is_speaking = False
+                self.is_speaking = False  # Снимаем блокировку
+                print(f"[TTS LOCK]: Блокировка снята, микрофон снова слушает")
 
                 if self.is_active:
                     self.app.update_assistant_status("Ассистент: Слушаю команды...", color=(0.2, 0.85, 0.3, 1))
@@ -567,19 +567,6 @@ class VoiceAssistant:
                 self._audio_needs_restart = False
                 break
 
-            # ЕСЛИ АССИСТЕНТ ГОВОРИТ — НЕ ЗАПИСЫВАЕМ МИКРОФОН (ИЗБАВЛЯЕМСЯ ОТ ЭХА)
-            if getattr(self, 'is_speaking', False):
-                time.sleep(0.1)
-                # Очищаем очередь на всякий случай, чтобы там не копился мусор
-                while not self.q.empty():
-                    try:
-                        self.q.get_nowait()
-                    except queue.Empty:
-                        break
-                continue
-
-            read_bytes = audio_record.read(buf, 0, buffer_size)
-            # ... дальше ваш код чтения ...
             try:
                 min_buf_size = AudioRecord.getMinBufferSize(sample_rate, channel_config, audio_format)
                 if min_buf_size <= 0:
@@ -610,6 +597,18 @@ class VoiceAssistant:
                     if self._audio_needs_restart:
                         self._audio_needs_restart = False
                         break
+
+                    # --- ВОТ ЗДЕСЬ ПРАВИЛЬНОЕ МЕСТО ДЛЯ БЛОКИРОВКИ ---
+                    # Если ассистент говорит, временно не читаем микрофон и чистим очередь
+                    if getattr(self, 'is_speaking', False):
+                        time.sleep(0.05)
+                        while not self.q.empty():
+                            try:
+                                self.q.get_nowait()
+                            except queue.Empty:
+                                break
+                        continue
+                    # ------------------------------------------------
 
                     # Читаем фиксированными небольшими порциями
                     read_bytes = audio_record.read(buf, 0, buffer_size)
@@ -650,7 +649,7 @@ class VoiceAssistant:
             self.q.put_nowait(bytes(indata))
         except queue.Full:
             pass
-        
+
     def processor_loop(self):
         if not HAS_VOSK or not self.model:
             return
