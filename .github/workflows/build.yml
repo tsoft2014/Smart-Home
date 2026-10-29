@@ -76,33 +76,14 @@ jobs:
          # name: SmartHome-Debug-APK
           #path: bin/*.apk
 
-      - name: Upload APK to tmpfiles.org
-        run: |
-          echo "Ищем собранный APK..."
-          APK_PATH=$(find bin -name "*.apk" | head -n 1)
-          
-          if [ -f "$APK_PATH" ]; then
-            echo "Загружаем APK на tmpfiles.org..."
-            
-            # Загружаем и сохраняем ответ в файл, чтобы увидеть его в логах при ошибке
-            RESPONSE=$(curl -s -F "file=@$APK_PATH" https://tmpfiles.org/api/v1/upload)
-            
-            echo "Ответ сервера: $RESPONSE"
-            
-            # Проверяем, есть ли поле .data.url в ответе
-            if echo "$RESPONSE" | grep -q "url"; then
-              DOWNLOAD_URL=$(echo $RESPONSE | jq -r '.data.url' | sed 's/tmpfiles.org\//tmpfiles.org\/dl\//')
-              
-              echo ""
-              echo "===================================================="
-              echo " ССЫЛКА НА СКАЧИВАНИЕ APK:"
-              echo " $DOWNLOAD_URL"
-              echo "===================================================="
-            else
-              echo "Ошибка: Сервер не вернул ссылку на скачивание!"
-              exit 1
-            fi
-          else
-            echo "Ошибка: APK-файл не найден в папке bin!"
-            exit 1
-          fi
+      - name: Upload APK to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bin/*.apk
+          tag_name: v1.0.${{ github.run_number }}
+          name: "SmartHome APK v1.0.${{ github.run_number }}"
+          body: "Автоматическая сборка приложения с поддержкой OpenCV и Vosk."
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
