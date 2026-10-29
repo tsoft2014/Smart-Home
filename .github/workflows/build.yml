@@ -75,3 +75,24 @@ jobs:
         #with:
          # name: SmartHome-Debug-APK
           #path: bin/*.apk
+
+      - name: Upload APK to File.io (One-time download)
+        run: |
+          echo "Ищем собранный APK..."
+          APK_PATH=$(find bin -name "*.apk" | head -n 1)
+          
+          if [ -f "$APK_PATH" ]; then
+            echo "Загружаем APK на file.io (ссылка удалится после первого скачивания)..."
+            # file.io требует отправку через параметр -F
+            RESPONSE=$(curl -s -F "file=@$APK_PATH" https://file.io)
+            
+            echo ""
+            echo "===================================================="
+            echo " Ответ сервера: $RESPONSE"
+            echo " (Скопируйте ссылку 'link' из ответа выше)"
+            echo " ВНИМАНИЕ: Ссылка работает ровно на 1 скачивание!"
+            echo "===================================================="
+          else
+            echo "Ошибка: APK-файл не найден в папке bin!"
+            exit 1
+          fi     
