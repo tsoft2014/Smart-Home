@@ -76,20 +76,24 @@ jobs:
          # name: SmartHome-Debug-APK
           #path: bin/*.apk
 
-      - name: Upload APK to File.io (One-time download)
+      - name: Upload APK to tmpfiles.org
         run: |
           echo "Ищем собранный APK..."
           APK_PATH=$(find bin -name "*.apk" | head -n 1)
           
           if [ -f "$APK_PATH" ]; then
-            echo "Загружаем APK на file.io с обходом защиты..."
-            # Добавили -L (следовать редиректам) и -A (User-Agent маскировка под браузер)
-            RESPONSE=$(curl -s -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -F "file=@$APK_PATH" https://file.io)
+            echo "Загружаем APK на tmpfiles.org..."
+            
+            # Загружаем файл и получаем чистый JSON-ответ
+            RESPONSE=$(curl -s -F "file=@$APK_PATH" https://tmpfiles.org/api/v1/upload)
+            
+            # Превращаем обычную ссылку в прямую ссылку на скачивание
+            DOWNLOAD_URL=$(echo $RESPONSE | jq -r '.data.url' | sed 's/tmpfiles.org\//tmpfiles.org\/dl\//')
             
             echo ""
             echo "===================================================="
-            echo " Ответ сервера: $RESPONSE"
-            echo " (Ищите поле \"link\" с адресом для скачивания)"
+            echo " ССЫЛКА НА СКАЧИВАНИЕ APK:"
+            echo " $DOWNLOAD_URL"
             echo "===================================================="
           else
             echo "Ошибка: APK-файл не найден в папке bin!"
