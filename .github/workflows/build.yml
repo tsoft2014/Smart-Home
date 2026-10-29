@@ -84,17 +84,24 @@ jobs:
           if [ -f "$APK_PATH" ]; then
             echo "Загружаем APK на tmpfiles.org..."
             
-            # Загружаем файл и получаем чистый JSON-ответ
+            # Загружаем и сохраняем ответ в файл, чтобы увидеть его в логах при ошибке
             RESPONSE=$(curl -s -F "file=@$APK_PATH" https://tmpfiles.org/api/v1/upload)
             
-            # Превращаем обычную ссылку в прямую ссылку на скачивание
-            DOWNLOAD_URL=$(echo $RESPONSE | jq -r '.data.url' | sed 's/tmpfiles.org\//tmpfiles.org\/dl\//')
+            echo "Ответ сервера: $RESPONSE"
             
-            echo ""
-            echo "===================================================="
-            echo " ССЫЛКА НА СКАЧИВАНИЕ APK:"
-            echo " $DOWNLOAD_URL"
-            echo "===================================================="
+            # Проверяем, есть ли поле .data.url в ответе
+            if echo "$RESPONSE" | grep -q "url"; then
+              DOWNLOAD_URL=$(echo $RESPONSE | jq -r '.data.url' | sed 's/tmpfiles.org\//tmpfiles.org\/dl\//')
+              
+              echo ""
+              echo "===================================================="
+              echo " ССЫЛКА НА СКАЧИВАНИЕ APK:"
+              echo " $DOWNLOAD_URL"
+              echo "===================================================="
+            else
+              echo "Ошибка: Сервер не вернул ссылку на скачивание!"
+              exit 1
+            fi
           else
             echo "Ошибка: APK-файл не найден в папке bin!"
             exit 1
