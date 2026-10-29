@@ -70,8 +70,8 @@ jobs:
         run: |
           yes | buildozer android debug
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartHome-Debug-APK
-          path: bin/*.apk
+      #- name: Upload APK Artifact
+       # uses: actions/upload-artifact@v4
+        #with:
+         # name: SmartHome-Debug-APK
+          #path: bin/*.apk
