@@ -41,6 +41,7 @@ version = 1.0.0
 #requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,hostpython3,srt
 #requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,hostpython3,srt,tqdm,charset-normalizer
 requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk
+
 # (list) Зависимости проекта
 #requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer
 #requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,hostpython3,srt,tqdm,charset-normalizer
@@ -54,7 +55,8 @@ fullscreen = 0
 # --- Настройки Android ---
 
 # (list) Разрешения Android для работы сети и микрофона
-android.permissions = INTERNET, RECORD_AUDIO, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
+#android.permissions = INTERNET, RECORD_AUDIO, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE
+android.permissions = INTERNET, RECORD_AUDIO, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, WRITE_EXTERNAL_STORAGE, READ_EXTERNAL_STORAGE, CAMERA
 
 android.add_libs_out_dir = libs/
 # Указываем сборщику, где искать ваши дополнительные библиотеки
