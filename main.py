@@ -3546,10 +3546,15 @@ class SmartHomeScreen(BaseScreen):
     def start_polling(self):
         if self.poll_event is not None:
             return
-        print(f"[POLL] Запуск сетевого опроса ESP8266 каждые {POLL_INTERVAL} сек...")
-        # Используем переменную вместо жесткой единицы
-        self.poll_event = Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
 
+        print("[POLL] Мгновенный первичный опрос ESP8266 при входе...")
+        # 1. Опрашиваем устройство СРАЗУ же без ожидания таймера
+        self.poll_statuses(0)
+
+        print(f"[POLL] Запуск регулярного сетевого опроса ESP8266 каждые {POLL_INTERVAL} сек...")
+        # 2. Запускаем периодический таймер на будущее
+        self.poll_event = Clock.schedule_interval(self.poll_statuses, POLL_INTERVAL)
+        
     def stop_polling(self):
         if self.poll_event:
             print("[POLL] Остановка сетевого опроса.")
