@@ -7,6 +7,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -57,7 +60,7 @@ jobs:
             libncurses5 \
             libstdc++6 \
             zlib1g
-            
+          
           python3 -m pip install --upgrade pip setuptools
           pip install "buildozer==1.5.0" "cython==0.29.36"
           
@@ -70,10 +73,14 @@ jobs:
         run: |
           yes | buildozer android debug
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload APK to GitHub Releases
+        uses: softprops/action-gh-release@v1
         with:
-          name: SmartHome-Debug-APK
-          path: bin/*.apk
-
-      
+          files: bin/*.apk
+          tag_name: v1.0.${{ github.run_number }}
+          name: "SmartHome APK v1.0.${{ github.run_number }}"
+          body: "Автоматическая сборка приложения с поддержкой OpenCV и Vosk."
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
