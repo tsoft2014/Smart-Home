@@ -42,8 +42,7 @@ version = 1.0.0
 #requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,hostpython3,srt,tqdm,charset-normalizer
 #requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv
 #requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, google-genai
-requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, pydantic==2.6.4, pydantic-core==2.16.3, google-genai
-#requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer
+requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, httpx, websockets, pillow
 #requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,vosk,hostpython3,srt,tqdm,charset-normalizer
 
 # (str) Ориентация экрана
