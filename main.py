@@ -24,7 +24,7 @@ Config.set('graphics', 'height', '700')
 
 from kivy.app import App
 from kivy.clock import Clock, mainthread
-from kivy.metrics import dp
+from kivy.metrics import sp, dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
@@ -44,9 +44,9 @@ from kivy.clock import mainthread
 from kivy.graphics.texture import Texture
 from kivy.graphics import Color, Ellipse, Line, Rectangle
 from io import BytesIO
-
-
-
+from kivy.clock import Clock
+from kivy.uix.camera import Camera  # Импортируем нативный виджет камеры
+from kivy.core.window import Window  # Не забудьте убедиться, что Window импортирован в файле
 
 # Распаковываем vosk, если папка еще не распакована на устройстве
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -550,6 +550,11 @@ class VoiceAssistant:
             return
 
         text = str(text).strip()
+
+        # --- ЗАПОМИНАЕМ ТЕКСТ ДЛЯ АНТИ-ЭХО ФИЛЬТРА ---
+        self.last_spoken_text = text.lower()
+
+        # ---------------------------------------------
 
         def _say_thread(cb=on_done_callback):
             with tts_lock:
@@ -1460,14 +1465,19 @@ class BaseScreen(Screen):
         self.bg_rect.pos = self.pos
         self.bg_rect.size = self.size
 
+
 class SystemSettingsPopup(Popup):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # Корневой контейнер попапа (строго как в AICameraScreen)
+        # Сохраняем предыдущий режим клавиатуры и включаем режим сдвига/адаптации
+        self.prev_softinput_mode = Window.softinput_mode
+        Window.softinput_mode = 'below_target'  # Правильное допустимое значение для Kivy
+
+        # Корневой контейнер попапа
         layout = BoxLayout(orientation='vertical', padding=dp(15), spacing=dp(10), size_hint=(1, 1))
 
-        # Фоновый цвет для всего окна (заливка без рамок через canvas.before)
+        # Фоновый цвет для всего окна
         from kivy.graphics import Color, Rectangle
         with layout.canvas.before:
             Color(0.11, 0.13, 0.17, 1)  # Темный фон
@@ -1522,12 +1532,12 @@ class SystemSettingsPopup(Popup):
             lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
             return lbl
 
-        # Реальная функция привязки голосового ввода к полю (объявляем заранее)
+        # Реальная функция привязки голосового ввода к полю
         def start_voice_recording_for_input(text_input_instance):
             print(f"[VOICE INPUT] Ожидание голосового ввода для поля...")
 
             orig_bg = text_input_instance.background_color
-            text_input_instance.background_color = (0.25, 0.2, 0.4, 1)  # Темный фиолетово-синий
+            text_input_instance.background_color = (0.25, 0.2, 0.4, 1)
             text_input_instance.text = "Запись..."
 
             app = App.get_running_app()
@@ -1605,6 +1615,7 @@ class SystemSettingsPopup(Popup):
                 text_input_instance.background_color = orig_bg
                 text_input_instance.text = ""
 
+        # Улучшенный обработчик создания блока с автопрокруткой при фокусе
         def create_setting_block(label_text, default_text="", input_filter=None, on_tap_callback=None):
             block = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
 
@@ -1655,6 +1666,15 @@ class SystemSettingsPopup(Popup):
                     halign='center',
                     padding=[dp(8), dp(10), dp(8), dp(8)]
                 )
+
+            # Автопрокрутка ScrollView к фокусному полю ввода, когда появляется клавиатура
+            def _on_focus(instance, value):
+                if value:  # Когда поле получает фокус (открывается клавиатура)
+                    from kivy.clock import Clock
+                    # Небольшая задержка, чтобы клавиатура успела начать отрисовку
+                    Clock.schedule_once(lambda dt: scroll.scroll_to(block), 0.15)
+
+            input_widget.bind(focus=_on_focus)
 
             input_widget.size_hint_x = 1.0
             block.add_widget(input_widget)
@@ -1707,7 +1727,6 @@ class SystemSettingsPopup(Popup):
         input_get.multiline = False
         input_get.readonly = True
 
-        # Перехватываем клик по этой строке для вызова браузера (ИСПРАВЛЕНО НА self)
         def on_get_touch(instance, touch):
             if instance.collide_point(*touch.pos):
                 self.fetch_and_fill_api_key()
@@ -1722,7 +1741,7 @@ class SystemSettingsPopup(Popup):
             "Текстовая модель:", saved_model
         )
         model_input.readonly = False
-        model_input.hint_text = "Например: gemini-3.8-flash"
+        model_input.hint_text = "Например: gemini-flash-lite-latest"
         self.inputs['ai_model_name'] = model_input
         content.add_widget(block)
 
@@ -1735,7 +1754,6 @@ class SystemSettingsPopup(Popup):
         self.inputs['ai_live_model_name'] = live_model_input
         content.add_widget(block)
 
-        # --- Автоматическая смена ключа и моделей при переключении провайдера «на лету» ---
         def on_provider_change(instance, value):
             prov = value.strip().lower()
             app_ref = App.get_running_app()
@@ -1748,10 +1766,12 @@ class SystemSettingsPopup(Popup):
                 self.inputs['ai_api_key'].text = saved_prov_key
 
             if 'ai_model_name' in self.inputs:
-                default_model = "gemini-3.8-flash" if prov == "gemini" else "GigaChat"
-                m_val = cfg.get(f"{prov}_model_name", default_model)
-                if not m_val or "2.5" in m_val:
-                    m_val = "gemini-3.8-flash"
+                default_model = "gemini-flash-lite-latest" if prov == "gemini" else "GigaChat"
+                m_val = cfg.get(f"{prov}_model_name",
+                                cfg.get('ai_model_name',
+                                        cfg.get('gemini_model_name', default_model)))
+                if not m_val:
+                    m_val = default_model
                 self.inputs['ai_model_name'].text = m_val
 
             if 'ai_live_model_name' in self.inputs:
@@ -1815,31 +1835,6 @@ class SystemSettingsPopup(Popup):
         )
         content.add_widget(block)
 
-        # --- Управление громкостью ---
-        #content.add_widget(create_section_header("Управление громкостью"))
-
-        #block, self.inputs['vol_plus_word'] = create_setting_block(
-            #"Слово для громкости +:", config.get('vol_plus_word', 'громче'),
-            #on_tap_callback=start_voice_recording_for_input
-        #)
-        #content.add_widget(block)
-
-        #block, self.inputs['vol_plus_resp'] = create_setting_block(
-            #"Ответ (+):", config.get('vol_plus_resp', 'Делаю громче'), on_tap_callback=start_voice_recording_for_input
-        #)
-        #content.add_widget(block)
-
-        #block, self.inputs['vol_minus_word'] = create_setting_block(
-            #"Слово для громкости -:", config.get('vol_minus_word', 'тише'),
-            #on_tap_callback=start_voice_recording_for_input
-        #)
-        #content.add_widget(block)
-
-        #block, self.inputs['vol_minus_resp'] = create_setting_block(
-            #"Ответ (-):", config.get('vol_minus_resp', 'Делаю тише'), on_tap_callback=start_voice_recording_for_input
-        #)
-        #content.add_widget(block)
-
         layout.add_widget(scroll)
 
         # Кнопка сохранения снизу
@@ -1863,10 +1858,13 @@ class SystemSettingsPopup(Popup):
 
         btn_back.bind(on_press=self.dismiss)
 
-    # --- МЕТОДЫ ВЫНЕСЕНЫ НА УРОВЕНЬ КЛАССА ---
+    def dismiss(self, *args, **kwargs):
+        # Возвращаем стандартный режим клавиатуры при закрытии попапа
+        if hasattr(self, 'prev_softinput_mode'):
+            Window.softinput_mode = self.prev_softinput_mode
+        super().dismiss(*args, **kwargs)
 
     def fetch_and_fill_api_key(self):
-        """Открывает страницу получения API-ключа в браузере в зависимости от выбранного провайдера."""
         import webbrowser
         try:
             provider_text = ""
@@ -1888,7 +1886,6 @@ class SystemSettingsPopup(Popup):
             print(f"[API KEY ERROR]: {e}")
 
     def save_settings_data(self, instance):
-        """Сохраняет настройки системы."""
         raw_data = {k: v.text.strip() for k, v in self.inputs.items()}
 
         provider = raw_data.get('ai_provider', 'gemini').strip().lower()
@@ -1911,18 +1908,13 @@ class SystemSettingsPopup(Popup):
             'wake_response': raw_data.get('wake_response', 'Слушаю'),
 
             'pause_timer': raw_data.get('pause_timer', '5'),
-            'activity_timer': raw_data.get('activity_timer', '30'),
+            'activity_timer': raw_data.key('activity_timer', '30') if hasattr(raw_data, 'key') else raw_data.get('activity_timer', '30'),
 
             'wake_word_light': raw_data.get('wake_word_light', 'свет'),
             'activity_timer_light': raw_data.get('activity_timer_light', '30'),
 
             'wake_word_cam': raw_data.get('wake_word_cam', 'снимок'),
             'activity_timer_cam': raw_data.get('activity_timer_cam', '30'),
-
-            #'vol_plus_word': raw_data.get('vol_plus_word', 'громче'),
-            #'vol_plus_resp': raw_data.get('vol_plus_resp', 'Делаю громче'),
-            #'vol_minus_word': raw_data.get('vol_minus_word', 'тише'),
-            #'vol_minus_resp': raw_data.get('vol_minus_resp', 'Делаю тише'),
         }
 
         print("[SYSTEM SETTINGS SAVED (ISOLATED)]: ", settings_data)
@@ -2373,22 +2365,17 @@ class GeminiLiveManager:
             print("[LIVE MIC PC] Поток отправки микрофона окончательно остановлен.")
 
     async def _send_microphone_android(self, session):
-        if not HAS_ANDROID_AUDIO:
-            raise RuntimeError("Android AudioRecord недоступен")
-
+        print("[LIVE MIC ANDROID] Запуск потока отправки микрофона...")
         loop = asyncio.get_running_loop()
-
         gemini_queue = asyncio.Queue()
-        vosk_queue = asyncio.Queue()
 
         def gemini_enqueue(item):
-            gemini_queue.put_nowait(item)
-
-        def vosk_enqueue(item):
-            vosk_queue.put_nowait(item)
+            try:
+                gemini_queue.put_nowait(item)
+            except Exception:
+                pass
 
         stop_event = threading.Event()
-        recorder_ref = []
 
         def record_worker():
             recorder = None
@@ -2398,7 +2385,7 @@ class GeminiLiveManager:
                 encoding = AudioFormat.ENCODING_PCM_16BIT
 
                 min_size = AudioRecord.getMinBufferSize(sample_rate, channel, encoding)
-                buffer_size = max(4096, min_size)
+                buffer_size = max(4096, min_size if min_size > 0 else 4096)
 
                 recorder = AudioRecord(
                     AudioSource.VOICE_RECOGNITION,
@@ -2407,40 +2394,36 @@ class GeminiLiveManager:
                     encoding,
                     buffer_size,
                 )
-                recorder_ref.append(recorder)
 
                 if recorder.getState() != AudioRecord.STATE_INITIALIZED:
-                    raise RuntimeError("AudioRecord не удалось инициализировать")
+                    print("[LIVE MIC ANDROID ERROR] AudioRecord не удалось инициализировать")
+                    return
 
                 recorder.startRecording()
-                buffer = bytearray(3200)
-
-                print("[LIVE MIC ANDROID] Запуск потока записи с разделением очередей...")
+                buffer = bytearray(buffer_size)
+                print("[LIVE MIC ANDROID] Запись с микрофона успешно началась.")
 
                 while self.is_live_active and not stop_event.is_set():
+                    # Если модель говорит, можно временно игнорировать микрофон (предотвращаем эхо)
+                    if getattr(self, 'model_is_speaking', False):
+                        time.sleep(0.05)
+                        continue
+
                     count = recorder.read(buffer, 0, len(buffer))
                     if count > 0:
                         pcm_bytes = bytes(buffer[:count])
-                        current_mode = getattr(self, 'current_mode', 'GEMINI')
 
-                        if current_mode == 'GEMINI':
-                            if getattr(self, 'model_is_speaking', False):
-                                continue
+                        # Мягкий шумовой барьер (15.0 вместо 80.0, чтобы слышно было отлично)
+                        audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+                        rms = np.sqrt(np.mean(audio_array.astype(float) ** 2)) if len(audio_array) > 0 else 0.0
 
-                            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-                            rms = np.sqrt(np.mean(audio_array.astype(float) ** 2)) if len(audio_array) > 0 else 0.0
+                        if rms > 15.0:
+                            loop.call_soon_threadsafe(gemini_enqueue, pcm_bytes)
+                    else:
+                        time.sleep(0.01)
 
-                            if rms > 80.0:
-                                loop.call_soon_threadsafe(gemini_enqueue, pcm_bytes)
-
-                        elif current_mode == 'VOSK':
-                            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-                            rms = np.sqrt(np.mean(audio_array.astype(float) ** 2)) if len(audio_array) > 0 else 0.0
-
-                            if rms > 50.0:
-                                loop.call_soon_threadsafe(vosk_enqueue, pcm_bytes)
-
-            except Exception:
+            except Exception as e:
+                print(f"[LIVE MIC ANDROID EXCEPTION]: {e}")
                 traceback.print_exc()
             finally:
                 if recorder is not None:
@@ -2453,6 +2436,7 @@ class GeminiLiveManager:
                         recorder.release()
                     except Exception:
                         pass
+                print("[LIVE MIC ANDROID] Нативный AudioRecord освобожден.")
 
         worker = threading.Thread(
             target=record_worker,
@@ -2463,28 +2447,31 @@ class GeminiLiveManager:
 
         try:
             while self.is_live_active:
-                if getattr(self, 'current_mode', 'GEMINI') == 'GEMINI':
-                    try:
-                        chunk = await asyncio.wait_for(gemini_queue.get(), timeout=0.1)
+                try:
+                    chunk = await asyncio.wait_for(gemini_queue.get(), timeout=0.1)
+                    if not self.is_live_active:
+                        break
 
-                        class BlobObj:
-                            def __init__(self, data, mime_type):
-                                self.data = data
-                                self.mime_type = mime_type
+                    class BlobObj:
+                        def __init__(self, data, mime_type):
+                            self.data = data
+                            self.mime_type = mime_type
 
-                        await session.send_realtime_input(
-                            audio=BlobObj(
-                                data=chunk,
-                                mime_type="audio/pcm;rate=16000",
-                            )
+                    await session.send_realtime_input(
+                        audio=BlobObj(
+                            data=chunk,
+                            mime_type="audio/pcm;rate=16000",
                         )
-                    except asyncio.TimeoutError:
-                        continue
-                else:
-                    await asyncio.sleep(0.05)
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as send_err:
+                    print(f"[LIVE MIC SEND ERROR]: {send_err}")
+                    break
         finally:
             stop_event.set()
             await asyncio.to_thread(worker.join, 2.0)
+            print("[LIVE MIC ANDROID] Поток отправки микрофона окончательно остановлен.")
 
     async def _receive_audio(self, session):
         if platform == "android":
@@ -2592,11 +2579,18 @@ class GeminiLiveManager:
 
                         if content.turn_complete:
                             print("[LIVE SERVER] Реплика модели завершена (turn_complete).")
+                            self.model_is_speaking = False
+                            await asyncio.sleep(0.3)
+
                         if content.interrupted:
                             print("[LIVE SERVER] Генерация прервана (interrupted).")
+                            self.model_is_speaking = False
 
                         if not content.model_turn:
                             continue
+
+                        # Модель начала говорить — ставим флаг
+                        self.model_is_speaking = True
 
                         for part in content.model_turn.parts:
                             if hasattr(part, 'text') and part.text:
@@ -2625,6 +2619,7 @@ class GeminiLiveManager:
             print(f"[LIVE RECEIVE ANDROID ERROR]: {e}")
             raise
         finally:
+            self.model_is_speaking = False
             try:
                 track.stop()
             except Exception:
@@ -2671,7 +2666,7 @@ class MainHubScreen(BaseScreen):
         # 1.1 Строка статуса ассистента (выше поля ввода)
         self.assistant_label = Label(
             text="Ассистент: Инициализация...",
-            font_size='13sp',
+            font_size=sp(14),  # Вместо '13sp'
             color=(0.7, 0.8, 0.9, 1),
             size_hint=(None, None),
             size=(dp(320), dp(25)),
@@ -2716,7 +2711,7 @@ class MainHubScreen(BaseScreen):
         # 2. Кнопка AI
         self.btn_send = FixedButton(
             text="AI",
-            font_size=13,
+            font_size=sp(14),  # Вместо 13
             bold=True,
             bg_color=(0.18, 0.5, 0.25, 1),
             size_hint_x=0.22,
@@ -2758,7 +2753,7 @@ class MainHubScreen(BaseScreen):
         # Заголовок
         content_box.add_widget(Label(
             text="Голосовой помощник",
-            font_size=22,
+            font_size=sp(22),  # Вместо 22
             bold=True,
             color=(0.95, 0.95, 0.95, 1),
             size_hint_y=None,
@@ -2768,7 +2763,7 @@ class MainHubScreen(BaseScreen):
         # Кнопка Умный дом
         btn_smarthome = FixedButton(
             text="Умный дом и Голос",
-            font_size=16,
+            font_size=sp(16),  # Вместо 16 (но через sp(16))
             bg_color=(0.18, 0.35, 0.6, 1),
             size_hint_y=None,
             height=dp(50)
@@ -2779,7 +2774,7 @@ class MainHubScreen(BaseScreen):
         # Кнопка ИИ Камера
         btn_camera = FixedButton(
             text="ИИ Камера",
-            font_size=16,
+            font_size=sp(16),  # Вместо 16 (но через sp(16))
             bg_color=(0.35, 0.2, 0.5, 1),
             size_hint_y=None,
             height=dp(50)
@@ -2791,18 +2786,17 @@ class MainHubScreen(BaseScreen):
         self.add_widget(root_layout)
 
     def on_text_changed(self, instance, value):
-        """Автоматически меняет вид кнопки в зависимости от того, есть ли текст в поле"""
+        """Меняем вид кнопки только в зависимости от статуса ИИ, а не от набора текста"""
         if getattr(self, 'is_speaking_now', False) or getattr(self, 'is_processing', False):
             return
 
+        # Пока пользователь пишет, кнопка всегда готова отправить текст
         if value.strip():
-            # Если пользователь что-то написал — меняем кнопку на «Отмена»
-            self.btn_send.text = "Отмена"
-            self.btn_send.bg_color = (0.7, 0.3, 0.2, 1)  # Красноватый оттенок
-        else:
-            # Если поле пустое — возвращаем стандартный вид «AI»
-            self.btn_send.text = "AI"
+            self.btn_send.text = "AI"  # или "Отправить"
             self.btn_send.bg_color = (0.18, 0.5, 0.25, 1)  # Зеленый
+        else:
+            self.btn_send.text = "AI"
+            self.btn_send.bg_color = (0.18, 0.5, 0.25, 1)
 
     def on_ai_button_pressed(self, instance):
         """Универсальный обработчик: Отмена текущего процесса ИЛИ отправка запроса"""
@@ -2896,7 +2890,6 @@ class MainHubScreen(BaseScreen):
                     except Exception:
                         pass
 
-        from kivy.clock import Clock
         def _force_ui(dt):
             try:
                 target_app = app or getattr(self, 'app', None)
@@ -3298,13 +3291,18 @@ class MainHubScreen(BaseScreen):
             return
 
         clean_text = self.clean_text_for_tts(text)
+
+        # --- БЛОКИРУЕМ МИКРОФОН ОТ ЭХА ---
+        self.is_assistant_speaking = True
+        self.last_spoken_text = clean_text.strip().lower()  # Запоминаем, что именно сказали
+        # ---------------------------------
+
         self.set_cancel_state()  # Переводим в состояние отмены/озвучки
 
         def _run_tts():
             try:
                 print(f"[TTS] Озвучиваю: {clean_text}")
                 import pyttsx3
-                # Сохраняем движок в переменную класса для внешнего обрыва через stop()
                 self.tts_engine = pyttsx3.init()
                 self.tts_engine.say(clean_text)
                 self.tts_engine.runAndWait()
@@ -3319,10 +3317,18 @@ class MainHubScreen(BaseScreen):
             finally:
                 self.tts_engine = None
                 from kivy.clock import Clock
-                Clock.schedule_once(lambda dt: self.reset_assistant_state(), 0)
+                # Даем небольшую паузу (0.8с) перед разблокировкой микрофона,
+                # чтобы звуковой хвост в комнате/динамике полностью затух
+                Clock.schedule_once(lambda dt: self._release_mic(), 0.8)
 
         import threading
         threading.Thread(target=_run_tts, daemon=True).start()
+
+    def _release_mic(self, dt):
+        """Снимает блокировку микрофона после завершения речи"""
+        self.is_assistant_speaking = False
+        if hasattr(self, 'reset_assistant_state'):
+            self.reset_assistant_state()
 
 class SmartHomeScreen(BaseScreen):
     def __init__(self, **kwargs):
@@ -3343,15 +3349,35 @@ class SmartHomeScreen(BaseScreen):
         main_layout = BoxLayout(orientation='vertical', padding=15, spacing=15)
 
         # Верхняя панель (Шапка)
-        top_bar = BoxLayout(size_hint_y=None, height=50, spacing=10)
-        btn_back = FixedButton(text="Меню", bg_color=(0.2, 0.23, 0.3, 1), size_hint=(None, None), width=100,
-                               height=45)
+        top_bar = BoxLayout(
+            size_hint_y=None,
+            height=dp(50),  # Используем dp
+            spacing=dp(10),
+            padding=[dp(10), dp(5), dp(10), dp(5)]  # Отступы, чтобы элементы не прижимались к краям
+        )
+
+        btn_back = FixedButton(
+            text="Меню",
+            bg_color=(0.2, 0.23, 0.3, 1),
+            size_hint=(None, None),
+            width=dp(80),  # Сделаем чуть компактнее под sp/dp
+            height=dp(40),
+            font_size=sp(14)  # Добавили адаптивный размер шрифта кнопки
+        )
         btn_back.bind(on_press=lambda x: setattr(self.manager, 'current', 'main'))
         top_bar.add_widget(btn_back)
 
-        lbl_title = Label(text="Управление домом", font_size=18, bold=True, color=(0.9, 0.9, 0.9, 1), halign='left')
+        lbl_title = Label(
+            text="Управление домом",
+            font_size=sp(18),  # Используем sp для нормального размера текста на телефоне
+            bold=True,
+            color=(0.9, 0.9, 0.9, 1),
+            halign='left',
+            valign='middle'
+        )
         lbl_title.bind(size=lbl_title.setter('text_size'))
         top_bar.add_widget(lbl_title)
+
         main_layout.add_widget(top_bar)
 
         # Карточка с закругленным фоном
@@ -3415,12 +3441,29 @@ class SmartHomeScreen(BaseScreen):
         card_layout.add_widget(header_box)
 
         # Метки температуры и статуса ассистента
-        self.temp_label = Label(text="Температура: -- °C", font_size=20, bold=True, color=(1, 1, 1, 1),
-                                size_hint_y=None, height=40)
+        self.temp_label = Label(
+            text="Температура: -- °C",
+            font_size=sp(18),  # Адаптивный размер шрифта для температуры
+            bold=True,
+            color=(1, 1, 1, 1),
+            size_hint_y=None,
+            height=dp(40),
+            halign='center',
+            valign='middle'
+        )
+        self.temp_label.bind(size=self.temp_label.setter('text_size'))
         card_layout.add_widget(self.temp_label)
 
-        self.assistant_label = Label(text="Ассистент: Инициализация...", font_size=13, color=(0.6, 0.6, 0.6, 1),
-                                     size_hint_y=None, height=25)
+        self.assistant_label = Label(
+            text="Ассистент: Инициализация...",
+            font_size=sp(14),  # Адаптивный размер шрифта для статуса
+            color=(0.6, 0.6, 0.6, 1),
+            size_hint_y=None,
+            height=dp(25),
+            halign='center',
+            valign='middle'
+        )
+        self.assistant_label.bind(size=self.assistant_label.setter('text_size'))
         card_layout.add_widget(self.assistant_label)
 
         # Динамический список ламп из конфига
@@ -3449,7 +3492,7 @@ class SmartHomeScreen(BaseScreen):
         # Кнопки управления снизу ("Включить все" / "Выключить все")
         btn_all_on = Button(
             text="ВКЛЮЧИТЬ ВСЕ",
-            font_size='13sp',
+            font_size=sp(13),  # Используем функцию sp()
             bold=True,
             background_normal='',
             background_color=(0.15, 0.2, 0.25, 1),
@@ -3461,7 +3504,7 @@ class SmartHomeScreen(BaseScreen):
 
         btn_all_off = Button(
             text="ВЫКЛЮЧИТЬ ВСЕ",
-            font_size='13sp',
+            font_size=sp(13),  # Используем функцию sp()
             bold=True,
             background_normal='',
             background_color=(0.15, 0.2, 0.25, 1),
@@ -3734,7 +3777,7 @@ class SmartHomeScreen(BaseScreen):
                 on_granted()
 
     def open_settings(self):
-        layout = BoxLayout(orientation='vertical', padding=15, spacing=10, size_hint=(1, 1))
+        layout = BoxLayout(orientation='vertical', padding=dp(15), spacing=dp(10), size_hint=(1, 1))
 
         from kivy.graphics import Color, Rectangle
         with layout.canvas.before:
@@ -3746,19 +3789,22 @@ class SmartHomeScreen(BaseScreen):
             pos=lambda inst, val: setattr(bg_rect, 'pos', val)
         )
 
-        top_bar = BoxLayout(size_hint_y=None, height=50, spacing=10)
+        # Исправленная шапка с использованием dp и sp
+        top_bar = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
+
         btn_back = FixedButton(
             text="Назад",
             bg_color=(0.2, 0.23, 0.3, 1),
             size_hint=(None, None),
-            width=100,
-            height=45
+            width=dp(80),  # Адаптивная ширина
+            height=dp(40),  # Адаптивная высота
+            font_size=sp(14)
         )
         top_bar.add_widget(btn_back)
 
         lbl_title = Label(
             text="Настройки системы",
-            font_size='18sp',
+            font_size=sp(18),  # Адаптивный размер шрифта через sp
             bold=True,
             color=(0.9, 0.9, 0.9, 1),
             halign='left',
@@ -3766,17 +3812,19 @@ class SmartHomeScreen(BaseScreen):
         )
         lbl_title.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         top_bar.add_widget(lbl_title)
+
         layout.add_widget(top_bar)
 
         scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False, do_scroll_y=True)
-        content = BoxLayout(orientation='vertical', spacing=14, size_hint_y=None, padding=[5, 5, 5, 5])
+        content = BoxLayout(orientation='vertical', spacing=dp(14), size_hint_y=None,
+                            padding=[dp(5), dp(5), dp(5), dp(5)])
         content.bind(minimum_height=content.setter('height'))
         scroll.add_widget(content)
 
         def create_section_header(text):
             lbl = Label(
                 text=text,
-                font_size='17sp',
+                font_size=sp(17),  # Используем функцию sp() вместо строки
                 bold=False,
                 color=(0.3, 0.7, 1, 1),
                 size_hint_y=None,
@@ -3837,7 +3885,7 @@ class SmartHomeScreen(BaseScreen):
                 multiline=False,
                 size_hint_y=None,
                 height=dp(40),
-                font_size='13sp',
+                font_size=sp(13),  # Используем sp()
                 readonly=True,
                 input_filter=input_filter,
                 background_color=(0.15, 0.17, 0.22, 1),
@@ -3854,7 +3902,7 @@ class SmartHomeScreen(BaseScreen):
                 multiline=False,
                 size_hint_y=None,
                 height=dp(40),
-                font_size='13sp',
+                font_size=sp(13),  # Используем sp()
                 input_filter=input_filter,
                 background_color=(0.15, 0.17, 0.22, 1),
                 foreground_color=(1, 1, 1, 1),
@@ -3868,7 +3916,7 @@ class SmartHomeScreen(BaseScreen):
 
             lbl = Label(
                 text=label_text,
-                font_size='16sp',
+                font_size=sp(16),  # Используем sp()
                 font_name='Roboto',
                 bold=False,
                 color=(0.85, 0.85, 0.85, 1),
@@ -3877,7 +3925,7 @@ class SmartHomeScreen(BaseScreen):
                 size_hint_y=None,
                 height=dp(22)
             )
-            lbl.bind(width=lambda inst, val: setattr(inst, 'text_size', (val, None)))
+            lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
             block.add_widget(lbl)
 
             input_widget.size_hint_x = 1.0
@@ -3893,7 +3941,7 @@ class SmartHomeScreen(BaseScreen):
         tts_block = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
         lbl_tts = Label(
             text="Голосовой ответ:",
-            font_size='16sp',
+            font_size=sp(16),  # Используем sp()
             color=(0.85, 0.85, 0.85, 1),
             size_hint_y=None,
             height=dp(22),
@@ -3910,7 +3958,7 @@ class SmartHomeScreen(BaseScreen):
             background_color=(0.15, 0.17, 0.22, 1),
             size_hint=(1, None),
             height=dp(40),
-            font_size='12sp',
+            font_size=sp(12),  # Используем sp()
             bold=False,
             color=(1, 1, 1, 1)
         )
@@ -3978,7 +4026,8 @@ class SmartHomeScreen(BaseScreen):
             text="Сохранить настройки",
             bg_color=(0.18, 0.5, 0.25, 1),
             size_hint_y=None,
-            height=50
+            height=dp(50),  # Адаптивная высота через dp
+            font_size=sp(16)  # Адаптивный размер шрифта через sp
         )
 
         def save_settings_data(instance):
@@ -4112,19 +4161,26 @@ class AICameraSettingsPopup(Popup):
         )
 
         # Шапка попапа
-        top_bar = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
+        top_bar = BoxLayout(
+            size_hint_y=None,
+            height=dp(50),
+            spacing=dp(10),
+            padding=[dp(10), dp(5), dp(10), dp(5)]
+        )
+
         btn_back = FixedButton(
             text="Назад",
             bg_color=(0.2, 0.23, 0.3, 1),
             size_hint=(None, None),
-            width=dp(100),
-            height=dp(45)
+            width=dp(80),
+            height=dp(40),
+            font_size=sp(14)
         )
         top_bar.add_widget(btn_back)
 
         lbl_title = Label(
             text="Настройки ИИ-камеры",
-            font_size='18sp',
+            font_size=sp(18),
             bold=True,
             color=(0.9, 0.9, 0.9, 1),
             halign='left',
@@ -4132,6 +4188,7 @@ class AICameraSettingsPopup(Popup):
         )
         lbl_title.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         top_bar.add_widget(lbl_title)
+
         layout.add_widget(top_bar)
 
         # Контент прокрутки
@@ -4144,7 +4201,7 @@ class AICameraSettingsPopup(Popup):
         def create_section_header(text):
             lbl = Label(
                 text=text,
-                font_size='17sp',
+                font_size=sp(17),
                 bold=False,
                 color=(0.3, 0.7, 1, 1),
                 size_hint_y=None,
@@ -4155,7 +4212,7 @@ class AICameraSettingsPopup(Popup):
             lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
             return lbl
 
-        # Функция голосового ввода для полей (по аналогии с главными настройками)
+        # Функция голосового ввода для полей
         def start_voice_recording_for_input(text_input_instance):
             print(f"[VOICE INPUT] Ожидание голосового ввода для поля камеры...")
 
@@ -4211,11 +4268,13 @@ class AICameraSettingsPopup(Popup):
                 text_input_instance.background_color = orig_bg
                 text_input_instance.text = ""
 
-        def create_setting_block(label_text, default_text="", is_interactive=False, multiline=False):
+        # Выносим helper создания блока на уровень конструктора попапа
+        def create_setting_block(label_text, input_widget):
             block = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
+
             lbl = Label(
                 text=label_text,
-                font_size='16sp',
+                font_size=sp(16),
                 font_name='Roboto',
                 bold=False,
                 color=(0.85, 0.85, 0.85, 1),
@@ -4224,45 +4283,14 @@ class AICameraSettingsPopup(Popup):
                 size_hint_y=None,
                 height=dp(22)
             )
-            lbl.bind(width=lambda inst, val: setattr(inst, 'text_size', (val, None)))
+            lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
             block.add_widget(lbl)
-
-            if is_interactive:
-                class TapTextInput(TextInput):
-                    def on_touch_down(self, touch):
-                        if self.collide_point(*touch.pos):
-                            start_voice_recording_for_input(self)
-                            return True
-                        return super().on_touch_down(touch)
-
-                input_widget = TapTextInput(
-                    text=str(default_text),
-                    multiline=False,
-                    size_hint_y=None,
-                    height=dp(40),
-                    font_size='13sp',
-                    background_color=(0.15, 0.17, 0.22, 1),
-                    foreground_color=(1, 1, 1, 1),
-                    halign='center',
-                    padding=[dp(8), dp(10), dp(8), dp(8)]
-                )
-                input_widget.hint_text = "Нажмите, чтобы записать голосом"
-            else:
-                input_widget = TextInput(
-                    text=str(default_text),
-                    multiline=multiline,
-                    size_hint_y=None,
-                    height=dp(70) if multiline else dp(40),
-                    font_size='13sp',
-                    background_color=(0.15, 0.17, 0.22, 1),
-                    foreground_color=(1, 1, 1, 1),
-                    halign='center',
-                    padding=[dp(8), dp(10), dp(8), dp(8)]
-                )
 
             input_widget.size_hint_x = 1.0
             block.add_widget(input_widget)
-            block.height = dp(22) + dp(4) + (dp(70) if multiline else dp(40))
+
+            # Вычисляем высоту блока в зависимости от высоты инпута
+            block.height = dp(22) + dp(4) + input_widget.height
             return block, input_widget
 
         self.inputs = {}
@@ -4271,22 +4299,43 @@ class AICameraSettingsPopup(Popup):
 
         content.add_widget(create_section_header("Параметры ИИ-камеры"))
 
-        # Промпт оставляем многострочным, но компактным
-        block, self.inputs['cam_prompt'] = create_setting_block(
-            "Промпт (запрос) для Gemini Vision:",
-            config.get('cam_prompt', "Что изображено в этой зоне поиска? Опиши кратко."),
-            is_interactive=False,
-            multiline=True
+        # 1. Многострочный инпут для промпта
+        prompt_input = TextInput(
+            text=str(config.get('cam_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")),
+            multiline=True,
+            size_hint_y=None,
+            height=dp(70),
+            font_size=sp(13),
+            background_color=(0.15, 0.17, 0.22, 1),
+            foreground_color=(1, 1, 1, 1),
+            halign='center',
+            padding=[dp(8), dp(10), dp(8), dp(8)]
         )
+        block, self.inputs['cam_prompt'] = create_setting_block("Промпт (запрос) для Gemini Vision:", prompt_input)
         content.add_widget(block)
 
-        # Ключевое слово для снимка делаем интерактивным (с голосовым вводом при нажатии)
-        block, self.inputs['wake_word_cam'] = create_setting_block(
-            "Ключевое слово для авто-снимка:",
-            config.get('wake_word_cam', "снимок"),
-            is_interactive=True,
-            multiline=False
+        # 2. Интерактивный инпут для ключевого слова с поддержкой тапа/голосового ввода
+        class TapTextInput(TextInput):
+            def on_touch_down(self, touch):
+                if self.collide_point(*touch.pos):
+                    start_voice_recording_for_input(self)
+                    return True
+                return super().on_touch_down(touch)
+
+        wake_input = TapTextInput(
+            text=str(config.get('wake_word_cam', "снимок")),
+            multiline=False,
+            size_hint_y=None,
+            height=dp(40),
+            font_size=sp(13),
+            background_color=(0.15, 0.17, 0.22, 1),
+            foreground_color=(1, 1, 1, 1),
+            halign='center',
+            padding=[dp(8), dp(10), dp(8), dp(8)]
         )
+        wake_input.hint_text = "Нажмите, чтобы записать голосом"
+
+        block, self.inputs['wake_word_cam'] = create_setting_block("Ключевое слово для авто-снимка:", wake_input)
         content.add_widget(block)
 
         layout.add_widget(scroll)
@@ -4296,7 +4345,8 @@ class AICameraSettingsPopup(Popup):
             text="Сохранить настройки",
             bg_color=(0.18, 0.5, 0.25, 1),
             size_hint_y=None,
-            height=dp(50)
+            height=dp(50),
+            font_size=sp(16)
         )
         btn_save.bind(on_press=self.save_settings_data)
         layout.add_widget(btn_save)
@@ -4329,6 +4379,108 @@ class AICameraSettingsPopup(Popup):
 
         print("[AI CAMERA SETTINGS SAVED]:", raw_data)
         self.dismiss()
+
+
+from kivy.uix.camera import Camera  # Импортируем нативный виджет для Android
+class CameraService:
+    def __init__(self):
+        self.running = False
+        self.latest_frame = None
+        self.capture = None
+        self.is_android = (platform == 'android')
+        self.thread = None
+
+    def start(self):
+        """Запуск потока захвата в зависимости от платформы"""
+        if self.running:
+            return
+
+        self.running = True
+        self.latest_frame = None
+
+        if self.is_android:
+            # На Android можно использовать нативный вызов или OpenCV бэкенд
+            print("[CameraService] Запуск камеры на Android...")
+
+            # Если нужно запустить OpenCV на Андроиде:
+            def android_worker():
+                import cv2
+                cap = cv2.VideoCapture(0)
+                self.capture = cap
+                while self.running:
+                    if self.capture and self.capture.isOpened():
+                        ret, frame = self.capture.read()
+                        if ret and frame is not None:
+                            self.latest_frame = frame
+                        else:
+                            time.sleep(0.01)
+                    else:
+                        time.sleep(0.1)
+                if self.capture:
+                    self.capture.release()
+                    self.capture = None
+
+            self.thread = threading.Thread(target=android_worker, daemon=True)
+            self.thread.start()
+        else:
+            # Запуск для ПК (Windows/Linux/macOS) через фоновый поток
+            def pc_worker():
+                import cv2
+                print("[CameraService] Инициализация веб-камеры на ПК...")
+                cap = None
+
+                try:
+                    if platform == 'win' or platform == 'win32':
+                        cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
+                        if not cap.isOpened():
+                            cap = cv2.VideoCapture(0, cv2.CAP_ANY)
+                    else:
+                        cap = cv2.VideoCapture(0, cv2.CAP_ANY)
+
+                    if not cap or not cap.isOpened():
+                        cap = cv2.VideoCapture(1, cv2.CAP_ANY)
+
+                    if cap and cap.isOpened():
+                        print("[CameraService] Камера на ПК успешно открыта.")
+                    else:
+                        print("[CameraService ERROR] Ни одна камера не доступна в системе!")
+                        return
+
+                    self.capture = cap
+
+                    while self.running:
+                        if self.capture and self.capture.isOpened():
+                            ret, frame = self.capture.read()
+                            if ret and frame is not None:
+                                self.latest_frame = frame
+                            else:
+                                time.sleep(0.01)
+                        else:
+                            time.sleep(0.1)
+                except Exception as e:
+                    print(f"[CameraService EXCEPTION]: {e}")
+                finally:
+                    if self.capture:
+                        try:
+                            self.capture.release()
+                        except Exception:
+                            pass
+                        self.capture = None
+                    print("[CameraService] Поток захвата ПК завершил работу.")
+
+            self.thread = threading.Thread(target=pc_worker, daemon=True)
+            self.thread.start()
+
+    def get_frame(self):
+        """Возвращает свежий кадр"""
+        return self.latest_frame
+
+    def stop(self):
+        """Остановка сервиса и освобождение ресурсов"""
+        self.running = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        print("[CameraService] Сервис полностью остановлен.")
 
 
 class AICameraScreen(BaseScreen):
@@ -4431,6 +4583,7 @@ class AICameraScreen(BaseScreen):
         self.add_widget(root_layout)
 
         self.capture = None
+        self._texture = None
 
         # Подгружаем сохраненные параметры из конфига при старте
         app = App.get_running_app()
@@ -4456,12 +4609,19 @@ class AICameraScreen(BaseScreen):
             if ret and frame is not None:
                 frame = cv2.flip(frame, 0)
                 buf = frame.tobytes()
-                image_texture = Texture.create(size=(frame.shape[1], frame.shape[0]), colorfmt='bgr')
-                image_texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
-                self.img_feed.texture = image_texture
+                h, w, _ = frame.shape
+
+                # Создаем текстуру один раз или при изменении размера кадра
+                if self._texture is None or self._texture.size != (w, h):
+                    self._texture = Texture.create(size=(w, h), colorfmt='bgr')
+                    self.img_feed.texture = self._texture
+
+                self._texture.blit_buffer(buf, colorfmt='bgr', bufferfmt='ubyte')
+                self.img_feed.canvas.ask_update()
 
     def on_leave(self):
         Clock.unschedule(self.update_frame)
+        self._texture = None
         if self.capture:
             try:
                 self.capture.release()
@@ -4546,9 +4706,9 @@ class AICameraScreen(BaseScreen):
 
         # 2. ЖЕСТКАЯ СТРАХОВКА: принудительно вырезаем любые оставшиеся звёздочки и решётки прямо здесь
         import re
-        cleaned_text = re.sub(r'\*+', '', cleaned_text)       # Стираем любые *, **, ***
-        cleaned_text = cleaned_text.replace('#', '')          # Стираем заголовки
-        cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip() # Убираем лишние пробелы
+        cleaned_text = re.sub(r'\*+', '', cleaned_text)  # Стираем любые *, **, ***
+        cleaned_text = cleaned_text.replace('#', '')  # Стираем заголовки
+        cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()  # Убираем лишние пробелы
 
         # 3. Озвучиваем очищенный текст
         spoken = False
@@ -4572,6 +4732,8 @@ class AICameraScreen(BaseScreen):
         if not spoken:
             print(f"[TTS MOCK]: {cleaned_text}")
 
+import logging
+logging.getLogger('comtypes').setLevel(logging.WARNING)
 
 class SmartApp(App):
     def __init__(self, **kwargs):
@@ -4665,7 +4827,7 @@ class SmartApp(App):
             self.reset_session_timer()
 
     def init_ai_client(self):
-        """Финальная стабильная инициализация клиента на httpx с поддержкой отмены и автоперебором"""
+        """Финальная стабильная инициализация клиента с поддержкой автоперебора и памяти"""
         try:
             config = getattr(self, 'config_data', {})
             api_key = config.get('ai_api_key', '') or os.environ.get("GEMINI_API_KEY", "")
@@ -4674,9 +4836,10 @@ class SmartApp(App):
                 print("[AI ERROR] API-ключ не найден в конфигурации.")
                 return None
 
+            # Приоритет модели из конфига/памяти, с актуальным дефолтом вместо устаревшей 3.8
             preferred_model = config.get('gemini_model_name',
-                                         config.get('ai_model_name', config.get('ai_model', 'gemini-3.8-flash')))
-            live_model_name = config.get('gemini_live_model_name', config.get('ai_live_model_name', 'gemini-3.8-live'))
+                                         config.get('ai_model_name', config.get('ai_model', 'gemini-2.0-flash')))
+            live_model_name = config.get('gemini_live_model_name', config.get('ai_live_model_name', 'gemini-2.0-flash'))
 
             class SimpleGenerativeService:
                 def __init__(self, key, app_instance):
@@ -4693,12 +4856,10 @@ class SmartApp(App):
                     m_name = model.replace("models/", "")
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={self.api_key}"
 
-                    # Интеллектуальное формирование частей запроса (текст + картинки в base64)
                     parts_list = []
                     items = contents if isinstance(contents, list) else [contents]
 
                     for item in items:
-                        # 1. Проверяем, является ли объект изображением PIL
                         if hasattr(item, "save") and hasattr(item, "format"):
                             try:
                                 buffered = BytesIO()
@@ -4706,7 +4867,6 @@ class SmartApp(App):
                                 item.save(buffered, format=img_format)
                                 img_bytes = buffered.getvalue()
                                 img_base64 = base64.b64encode(img_bytes).decode("utf-8")
-
                                 mime_type = f"image/{img_format.lower()}"
 
                                 parts_list.append({
@@ -4719,7 +4879,6 @@ class SmartApp(App):
                             except Exception as img_err:
                                 print(f"[AI WARNING] Не удалось обработать PIL Image: {img_err}")
 
-                        # 2. Обработка текста или составных частей
                         text_val = ""
                         if hasattr(item, "text"):
                             text_val = str(item.text)
@@ -4731,7 +4890,6 @@ class SmartApp(App):
                         if text_val.strip():
                             parts_list.append({"text": text_val})
 
-                    # Если список пуст, добавляем базовую заглушку
                     if not parts_list:
                         parts_list = [{"text": "Проанализируй это."}]
 
@@ -4754,7 +4912,8 @@ class SmartApp(App):
                             return
 
                         try:
-                            with httpx.Client(timeout=45.0) as client_http:
+                            # Уменьшаем таймаут с 45 до 8-10 секунд для быстрого перебора
+                            with httpx.Client(timeout=8.0) as client_http:
                                 response = client_http.post(url, json=payload)
 
                             if response.status_code == 200:
@@ -4765,6 +4924,33 @@ class SmartApp(App):
                                     for p in parts:
                                         if "text" in p:
                                             yield StreamChunk(p["text"])
+
+                                            # --- ЖЕСТКАЯ АВТОМАТИЧЕСКАЯ ЗАПИСЬ НА ДИСК И В ПАМЯТЬ ---
+                                            try:
+                                                cfg_path = "config.json"
+                                                file_data = {}
+                                                if os.path.exists(cfg_path):
+                                                    with open(cfg_path, 'r', encoding='utf-8') as f:
+                                                        file_data = json.load(f)
+
+                                                # Обновляем все ключи моделей на рабочую победительницу
+                                                file_data['ai_model_name'] = m_name
+                                                file_data['gemini_model_name'] = m_name
+                                                provider = file_data.get('ai_provider', 'gemini').strip().lower()
+                                                file_data[f"{provider}_model_name"] = m_name
+
+                                                with open(cfg_path, 'w', encoding='utf-8') as f:
+                                                    json.dump(file_data, f, ensure_ascii=False, indent=4)
+
+                                                # СРАЗУ ОБНОВЛЯЕМ ПАМЯТЬ ПРИЛОЖЕНИЯ БЕЗ ПЕРЕЗАПУСКА
+                                                if hasattr(self, 'app') and hasattr(self.app, 'config_data'):
+                                                    self.app.config_data.update(file_data)
+
+                                                print(
+                                                    f"[AI AUTO-MEMORY] Модель '{m_name}' записана на диск и обновлена в памяти!")
+                                            except Exception as save_err:
+                                                print(f"[AI AUTO-MEMORY ERROR]: {save_err}")
+                                            # --------------------------------------------------------
                                 return
                             elif response.status_code in [503, 504, 429] and attempt < max_retries - 1:
                                 print(
@@ -4836,6 +5022,7 @@ class SmartApp(App):
 
             client = FullClientMock(api_key, self)
 
+            # Формируем список моделей, ставя сохраненную в конфиге на первое место
             models_to_try = [preferred_model]
             try:
                 for model_info in client.models.list():
@@ -4865,19 +5052,24 @@ class SmartApp(App):
             return None
 
     def send_ai_request(self, prompt, image_path=None):
-        """Централизованная функция ИИ-запросов (текст + фото через REST API без тяжелого SDK)"""
+        """Централизованная функция ИИ-запросов с универсальным автоперебором и сохранением"""
         import traceback
         try:
             app = App.get_running_app()
             ai_data = app.init_ai_client() if hasattr(app, 'init_ai_client') else None
             client = None
 
-            models_to_try = ["gemini-3.8-flash", "gemini-flash-latest"]
+            # Берем то, что записано в конфиге
+            saved_preferred_model = app.config_data.get('gemini_model_name', 'gemini-flash-lite-latest')
+            models_to_try = [saved_preferred_model, "gemini-flash-latest", "gemini-flash-lite-latest"]
 
             if ai_data and isinstance(ai_data, dict):
                 client = ai_data.get("client")
-                if ai_data.get("models_to_try"):
-                    models_to_try = ai_data.get("models_to_try")
+                fetched_models = ai_data.get("models_to_try", [])
+                if fetched_models:
+                    # Фильтруем серверный список: убираем старую 3.8, чтобы она даже не пыталась запускаться
+                    filtered_models = [m for m in fetched_models if "3.8" not in m and "2.5" not in m]
+                    models_to_try = [saved_preferred_model] + [m for m in filtered_models if m != saved_preferred_model]
 
             if not client and hasattr(self, 'client'):
                 client = self.client
@@ -4886,7 +5078,6 @@ class SmartApp(App):
                 print("[AI ERROR] API-ключ не найден в конфигурации.")
                 return "Ошибка: проверьте API ключ в настройках."
 
-            # Формируем контент
             if image_path:
                 print(f"[AI REQUEST] Открытие изображения {image_path} в памяти...")
                 from PIL import Image
@@ -4906,7 +5097,23 @@ class SmartApp(App):
                     if response and hasattr(response, 'text') and response.text:
                         response_text = response.text.strip()
                         print(f"[AI REQUEST] Успешно ответила модель: {model_name}")
+
+                        # Вся тяжелая работа по автосохранению на диск и обновлению памяти
+                        # теперь надежно выполняется внутри самого клиента при получении 200 OK.
+                        # Здесь мы оставляем только обновление интерфейса на лету (если настройки открыты):
+                        try:
+                            app = App.get_running_app()
+                            current_screen = getattr(app, 'root', None)
+                            if hasattr(current_screen, 'current_screen'):
+                                active_scr = current_screen.current_screen
+                                if hasattr(active_scr, 'inputs') and 'ai_model_name' in active_scr.inputs:
+                                    active_scr.inputs['ai_model_name'].text = model_name
+                                    print("[UI] Поле модели в открытых настройках обновлено автоматически!")
+                        except Exception as ui_err:
+                            print(f"[UI UPDATE DEBUG]: {ui_err}")
+
                         break
+
                 except Exception as mod_err:
                     print(f"[AI WARNING] Модель {model_name} не ответила: {mod_err}")
                     continue
