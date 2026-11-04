@@ -13,7 +13,7 @@ import numpy as np
 import itertools
 import websockets
 import base64
-import httpx
+
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
