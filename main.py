@@ -15,7 +15,6 @@ import websockets
 import base64
 import httpx
 
-
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 from kivy.config import Config
@@ -48,6 +47,7 @@ from io import BytesIO
 from kivy.clock import Clock
 from kivy.uix.camera import Camera  # Импортируем нативный виджет камеры
 from kivy.core.window import Window  # Не забудьте убедиться, что Window импортирован в файле
+
 
 # Распаковываем vosk, если папка еще не распакована на устройстве
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1556,8 +1556,12 @@ class SystemSettingsPopup(Popup):
                     from kivy.core.clipboard import Clipboard
                     clipboard_text = Clipboard.get('text')
                     if clipboard_text:
-                        current_text = self.text
-                        cursor_index = self.cursor_index
+                        current_text = self.text or ""
+
+                        # Защита: принудительно преобразуем индекс каретки в целое число (int)
+                        raw_cursor = self.cursor_index
+                        cursor_index = int(raw_cursor) if raw_cursor is not None else len(current_text)
+
                         self.text = current_text[:cursor_index] + clipboard_text + current_text[cursor_index:]
                         self.cursor_index = cursor_index + len(clipboard_text)
                         print(f"[CLIPBOARD] Успешно вставлено из буфера: {clipboard_text}")
@@ -2097,7 +2101,6 @@ class GeminiLiveManager:
 
                     async def send_realtime_input(self, audio):
                         audio_b64 = base64.b64encode(audio.data).decode('utf-8')
-                        # Формат ключей строго как в успешных логах: realtime_input -> audio
                         msg = {
                             "realtime_input": {
                                 "audio": {
@@ -2158,11 +2161,18 @@ class GeminiLiveManager:
 
                             yield ContentObj(response_data)
 
-            # Цикл автореконнекта
-            while self.is_live_active:
+            # ЗАЩИЩЕННЫЙ ЦИКЛ АВТОРЕКОННЕКТА (Ограничение в 3 попытки)
+            max_retries = 3
+            retry_count = 0
+
+            while self.is_live_active and retry_count < max_retries:
                 try:
-                    self._status("Подключение к Live API...", (0.9, 0.5, 0.1, 1))
-                    async with websockets.connect(uri) as websocket:
+                    self._status(f"Подключение к Live API (попытка {retry_count + 1}/{max_retries})...",
+                                 (0.9, 0.5, 0.1, 1))
+                    async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as websocket:
+                        # Успешное соединение — сбрасываем счетчик ошибок
+                        retry_count = 0
+
                         session = WebSocketSessionAdapter(websocket)
                         self.active_session = session
 
@@ -2214,7 +2224,7 @@ class GeminiLiveManager:
 
                             Clock.schedule_once(show_btn, 0)
 
-                        # Принудительный старт приветствия (через стандартный метод адаптера)
+                        # Принудительный старт приветствия
                         class DummyPart:
                             def __init__(self, text):
                                 self.text = text
@@ -2244,14 +2254,11 @@ class GeminiLiveManager:
                             raise
                         except Exception as task_err:
                             print(f"[LIVE STREAM ERROR]: {task_err}")
-
+                            retry_count += 1
                             if not self.is_live_active:
                                 break
-
-                            if self.is_live_active:
-                                self._status("Переподключение...", (0.9, 0.5, 0.1, 1))
-                                await asyncio.sleep(1.5)
-                                continue
+                            await asyncio.sleep(2.0)
+                            continue
                         finally:
                             for task in tasks:
                                 if not task.done():
@@ -2260,10 +2267,15 @@ class GeminiLiveManager:
 
                 except Exception as net_err:
                     print(f"[LIVE NET ERROR]: {net_err}")
-                    if not self.is_live_active:
+                    retry_count += 1
+                    if not self.is_live_active or retry_count >= max_retries:
+                        print("[LIVE] Превышено число попыток переподключения. Выход из Live.")
                         break
-                    self._status("Обрыв связи, повтор...", (0.9, 0.2, 0.2, 1))
-                    await asyncio.sleep(2.0)
+                    self._status(f"Обрыв связи, повтор ({retry_count}/{max_retries})...", (0.9, 0.2, 0.2, 1))
+                    await asyncio.sleep(2.5)
+
+            if retry_count >= max_retries:
+                self._status("Ошибка: нет связи с сервером", (0.9, 0.2, 0.2, 1))
 
         except asyncio.CancelledError:
             raise
@@ -3746,28 +3758,45 @@ class SmartHomeScreen(BaseScreen):
                 self.wifi_icon.color = (0.4, 0.4, 0.4, 1)
 
     def fetch_temperature(self, speak_result=False):
-        def req():
-            sensor_ip = self.config_data.get("sensor_ip") or self.config_data.get("device_ip")
-            try:
-                res = requests.get(f"http://{sensor_ip}/", timeout=TIMEOUT)
-                if res.status_code == 200:
-                    raw_text = res.text.strip()
-                    match = re.search(r"(\d+\.\d+)", raw_text)
-                    if not match:
-                        match = re.search(r"(?:Temp|Температура)[^\d]*(\d+(?:\.\d+)?)", raw_text, re.IGNORECASE)
+        """Берем актуальную температуру (фоновый опрос и так держит её в актуальном состоянии)"""
+        try:
+            # Если нужно просто озвучить то, что уже есть на экране (ведь опрос каждые 5 сек обновляет метку)
+            current_text = getattr(self.temp_label, 'text', '') if hasattr(self, 'temp_label') else ''
 
+            if speak_result and self.config_data.get("tts_enabled", True):
+                if hasattr(self, 'assistant') and self.assistant and current_text:
+                    # Извлекаем цифру из текущего текста метки на экране, чтобы не делать лишний сетевой запрос
+                    import re
+                    match = re.search(r"(\d+(?:\.\d+)?)", current_text)
                     if match:
-                        current_temp = float(match.group(1))
-                        speech_text = format_temperature_speech(current_temp)
-                        self._set_temp_text(f"Температура: {current_temp:.1f} °C")
+                        temp_val = float(match.group(1))
+                        speech_text = format_temperature_speech(temp_val)
+                        self.assistant.speak(speech_text)
+                        return
 
-                        if speak_result and self.config_data.get("tts_enabled", True):
-                            if hasattr(self, 'assistant') and self.assistant:
-                                self.assistant.speak(speech_text)
-            except Exception as e:
-                print(f"[ОШИБКА ДАТЧИКА]: {e}")
+            # Если фоновый опрос по какой-то причине еще не успел отработать, делаем разовый запрос
+            sensor_ip = self.config_data.get("sensor_ip") or self.config_data.get("device_ip")
+            if sensor_ip:
+                def req():
+                    try:
+                        res = requests.get(f"http://{sensor_ip}/", timeout=3)
+                        if res.status_code == 200:
+                            raw_text = res.text.strip()
+                            match = re.search(r"(\d+\.\d+)", raw_text) or re.search(
+                                r"(?:Temp|Температура)[^\d]*(\d+(?:\.\d+)?)", raw_text, re.IGNORECASE)
+                            if match:
+                                current_temp = float(match.group(1))
+                                self._set_temp_text(f"Температура: {current_temp:.1f} °C")
+                                if speak_result and self.config_data.get("tts_enabled", True):
+                                    if hasattr(self, 'assistant') and self.assistant:
+                                        self.assistant.speak(format_temperature_speech(current_temp))
+                    except Exception as e:
+                        print(f"[ОШИБКА ДАТЧИКА]: {e}")
 
-        threading.Thread(target=req, daemon=True).start()
+                threading.Thread(target=req, daemon=True).start()
+
+        except Exception as e:
+            print(f"[FETCH TEMP ERROR]: {e}")
 
     @mainthread
     def _set_temp_text(self, text):
@@ -4576,14 +4605,28 @@ class AICameraScreen(BaseScreen):
                     pass
                 self.capture = None
 
-    def capture_and_process_ai(self):
+    @mainthread
+    def capture_and_process_ai(self, *args):
         """Делает снимок, вырезает зону центрального квадрата и отправляет в Gemini"""
         image_path = "snapshot_ai.jpg"
 
         if platform == 'android':
             try:
+                # Удаляем старый файл, если он остался
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+
                 # На Android сохраняем текущий кадр нативного виджета Camera в файл
-                self.img_feed.export_to_png(image_path)
+                success = self.img_feed.export_to_png(image_path)
+
+                # Небольшая пауза для гарантированной записи файла на флеш-память
+                time.sleep(0.3)
+
+                if not success or not os.path.exists(image_path):
+                    print("[AI CAMERA ERROR] export_to_png вернул ошибку или файл не создан")
+                    self.speak_text_safely("Не удалось сделать снимок")
+                    return
+
                 print(f"[AI CAMERA] Снимок с Android камеры сохранен: {image_path}")
             except Exception as e:
                 print(f"[AI CAMERA ERROR] Не удалось сделать снимок на Android: {e}")
@@ -4604,6 +4647,10 @@ class AICameraScreen(BaseScreen):
         try:
             img = cv2.imread(image_path)
             if img is not None:
+                # ЕСЛИ НА ANDROID КАРТИНКА ПОВЕРНУТА БОКОМ, раскомментируйте нужный поворот:
+                # img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+                # или cv2.ROTATE_90_COUNTERCLOCKWISE / cv2.ROTATE_180
+
                 h, w, _ = img.shape
                 box_size = int(min(h, w) * 0.6)
                 cx, cy = w // 2, h // 2
@@ -5006,73 +5053,120 @@ class SmartApp(App):
             return None
 
     def send_ai_request(self, prompt, image_path=None):
-        """Централизованная функция ИИ-запросов с универсальным автоперебором и сохранением"""
-        import traceback
+        """Централизованная функция с динамическим умным перебором моделей через чистый REST API"""
         try:
             app = App.get_running_app()
-            ai_data = app.init_ai_client() if hasattr(app, 'init_ai_client') else None
-            client = None
 
-            # Берем то, что записано в конфиге
-            saved_preferred_model = app.config_data.get('gemini_model_name', 'gemini-flash-lite-latest')
-            models_to_try = [saved_preferred_model, "gemini-flash-latest", "gemini-flash-lite-latest"]
+            # 1. Получаем API-ключ
+            api_key = None
+            if hasattr(app, 'config_data') and app.config_data:
+                api_key = app.config_data.get('gemini_api_key') or app.config_data.get('api_key')
+            if not api_key and hasattr(app, 'api_key'):
+                api_key = app.api_key
 
-            if ai_data and isinstance(ai_data, dict):
-                client = ai_data.get("client")
-                fetched_models = ai_data.get("models_to_try", [])
-                if fetched_models:
-                    # Фильтруем серверный список: убираем старую 3.8, чтобы она даже не пыталась запускаться
-                    filtered_models = [m for m in fetched_models if "3.8" not in m and "2.5" not in m]
-                    models_to_try = [saved_preferred_model] + [m for m in filtered_models if m != saved_preferred_model]
-
-            if not client and hasattr(self, 'client'):
-                client = self.client
-
-            if not client:
+            if not api_key:
                 print("[AI ERROR] API-ключ не найден в конфигурации.")
                 return "Ошибка: проверьте API ключ в настройках."
 
+            # 2. УМНЫЙ ДИНАМИЧЕСКИЙ ПЕРЕБОР МОДЕЛЕЙ (как у вас было задумано)
+            ai_data = app.init_ai_client() if hasattr(app, 'init_ai_client') else None
+            saved_preferred_model = app.config_data.get('gemini_model_name', 'gemini-2.0-flash') if hasattr(app,
+                                                                                                            'config_data') else 'gemini-2.0-flash'
+
+            # Базовый список на случай, если динамический еще не подгрузился
+            models_to_try = [saved_preferred_model, "gemini-2.0-flash", "gemini-1.5-flash"]
+
+            if ai_data and isinstance(ai_data, dict):
+                fetched_models = ai_data.get("models_to_try", [])
+                if fetched_models:
+                    # Фильтруем серверный список: убираем старые версии (3.8, 2.5 и т.д.)
+                    filtered_models = [m for m in fetched_models if "3.8" not in m and "2.5" not in m]
+                    # Формируем умный порядок: сначала любимая модель, затем остальные уникальные из сети
+                    models_to_try = [saved_preferred_model] + [m for m in filtered_models if m != saved_preferred_model]
+
+            # Убираем дубликаты из списка моделей, сохраняя порядок
+            models_to_try = list(dict.fromkeys(models_to_try))
+            print(f"[AI DYNAMIC MODELS] Список для перебора: {models_to_try}")
+
+            # 3. Подготовка содержимого запроса (поддержка текста и картинок)
+            parts = [{"text": prompt}]
+
             if image_path:
-                print(f"[AI REQUEST] Открытие изображения {image_path} в памяти...")
-                from PIL import Image
-                img = Image.open(image_path)
-                contents = [img, prompt]
-            else:
-                contents = [prompt]
+                print(f"[AI REQUEST] Чтение изображения {image_path} для Vision-запроса...")
+                try:
+                    # Определяем MIME-тип по расширению файла (надежно и без imghdr)
+                    ext = image_path.lower().split('.')[-1]
+                    mime_map = {
+                        'jpg': 'image/jpeg',
+                        'jpeg': 'image/jpeg',
+                        'png': 'image/png',
+                        'webp': 'image/webp',
+                        'heic': 'image/heic',
+                        'heif': 'image/heif'
+                    }
+                    mime_type = mime_map.get(ext, 'image/jpeg')
+
+                    with open(image_path, "rb") as img_file:
+                        img_bytes = img_file.read()
+                        img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": img_b64
+                        }
+                    })
+                except Exception as img_err:
+                    print(f"[AI IMAGE ERROR]: {img_err}")
 
             response_text = None
+
+            # 4. Перебираем модели через чистый REST API
             for model_name in models_to_try:
                 try:
-                    print(f"[AI REQUEST] Запрос к модели: {model_name}")
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=contents
-                    )
-                    if response and hasattr(response, 'text') and response.text:
-                        response_text = response.text.strip()
-                        print(f"[AI REQUEST] Успешно ответила модель: {model_name}")
+                    clean_model = model_name.replace("models/", "")
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={api_key}"
 
-                        # Вся тяжелая работа по автосохранению на диск и обновлению памяти
-                        # теперь надежно выполняется внутри самого клиента при получении 200 OK.
-                        # Здесь мы оставляем только обновление интерфейса на лету (если настройки открыты):
-                        try:
-                            app = App.get_running_app()
-                            current_screen = getattr(app, 'root', None)
-                            if hasattr(current_screen, 'current_screen'):
-                                active_scr = current_screen.current_screen
-                                if hasattr(active_scr, 'inputs') and 'ai_model_name' in active_scr.inputs:
-                                    active_scr.inputs['ai_model_name'].text = model_name
-                                    print("[UI] Поле модели в открытых настройках обновлено автоматически!")
-                        except Exception as ui_err:
-                            print(f"[UI UPDATE DEBUG]: {ui_err}")
+                    headers = {'Content-Type': 'application/json'}
+                    payload = {
+                        "contents": [{
+                            "parts": parts
+                        }]
+                    }
 
-                        break
+                    print(f"[AI REST REQUEST] Запрос к модели: {clean_model}")
+                    response = requests.post(url, headers=headers, json=payload, timeout=25)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            content = candidates[0].get("content", {})
+                            resp_parts = content.get("parts", [])
+                            if resp_parts:
+                                response_text = resp_parts[0].get("text", "").strip()
+                                print(f"[AI REST REQUEST] Успешный ответ от модели: {clean_model}")
+
+                                # Автоматически обновляем поле модели в настройках, если они открыты
+                                try:
+                                    current_screen = getattr(app, 'root', None)
+                                    if hasattr(current_screen, 'current_screen'):
+                                        active_scr = current_screen.current_screen
+                                        if hasattr(active_scr, 'inputs') and 'ai_model_name' in active_scr.inputs:
+                                            active_scr.inputs['ai_model_name'].text = clean_model
+                                            print("[UI] Поле модели в настройках обновлено!")
+                                except Exception as ui_err:
+                                    print(f"[UI UPDATE DEBUG]: {ui_err}")
+
+                                break
+                    else:
+                        print(f"[AI WARNING] Модель {clean_model} вернула код {response.status_code}: {response.text}")
 
                 except Exception as mod_err:
-                    print(f"[AI WARNING] Модель {model_name} не ответила: {mod_err}")
+                    print(f"[AI WARNING] Ошибка запроса к модели {model_name}: {mod_err}")
                     continue
 
-            return response_text
+            return response_text or "Не удалось получить ответ от сервера ИИ."
 
         except Exception as e:
             print(f"[AI CRITICAL ERROR]: {e}")
