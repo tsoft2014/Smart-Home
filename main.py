@@ -13,6 +13,8 @@ import numpy as np
 import itertools
 import websockets
 import base64
+import certifi
+import ssl
 
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -1052,6 +1054,10 @@ class VoiceAssistant:
         return raw.split(",")[0].strip().capitalize()
 
     def process_command(self, raw_command):
+        # --- ЖЕСТКАЯ ЗАЩИТА ОТ ЭХА (ИГНОРИРУЕМ ГОЛОС АССИСТЕНТА) ---
+        if getattr(self, 'is_speaking', False):
+            return
+
         norm_command = raw_command.lower().strip()
         if not norm_command:
             return
@@ -1068,7 +1074,6 @@ class VoiceAssistant:
 
             Clock.schedule_once(lambda dt: target(norm_command), 0)
             return
-
         # --- 2. БЛОКИРОВКА VOSK ЕСЛИ АКТИВЕН LIVE-ДИАЛОГ ---
         is_live = (
                 getattr(self, "is_live_active", False)
@@ -1960,6 +1965,7 @@ class SystemSettingsPopup(Popup):
         self.dismiss()
 
 
+
 class GeminiLiveManager:
     def __init__(self, app):
         self.app = app
@@ -2161,6 +2167,9 @@ class GeminiLiveManager:
 
                             yield ContentObj(response_data)
 
+            # Создаем SSL-контекст с доверенными сертификатами certifi для обхода ошибки Android SSL
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+
             # ЗАЩИЩЕННЫЙ ЦИКЛ АВТОРЕКОННЕКТА (Ограничение в 3 попытки)
             max_retries = 3
             retry_count = 0
@@ -2169,7 +2178,9 @@ class GeminiLiveManager:
                 try:
                     self._status(f"Подключение к Live API (попытка {retry_count + 1}/{max_retries})...",
                                  (0.9, 0.5, 0.1, 1))
-                    async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as websocket:
+
+                    # Передаем ssl=ssl_context в websockets.connect
+                    async with websockets.connect(uri, ping_interval=20, ping_timeout=20, ssl=ssl_context) as websocket:
                         # Успешное соединение — сбрасываем счетчик ошибок
                         retry_count = 0
 
@@ -2197,8 +2208,7 @@ class GeminiLiveManager:
                                             "Всегда общайся вежливо, кратко и исключительно на русском языке. "
                                             "Никогда не прощайся сам по себе, если пользователь не сказал 'пока' или 'до свидания'."
                                             "Если пользователь говорит 'стоп', 'хватит', 'выход' или 'закончим разговор', "
-                                            "ты должна ответить 'До свидания!' и завершить диалог."
-                                        )
+                                            "ты должна ответить 'До свидания!', обязательно добавить в текст маркер [DISCONNECT] и завершить диалог."                                        )
                                     }]
                                 }
                             }
@@ -2382,7 +2392,6 @@ class GeminiLiveManager:
                         if not self.is_live_active:
                             break
 
-                        # Используем псевдо-Blob структуру для адаптера
                         class BlobObj:
                             def __init__(self, data, mime_type):
                                 self.data = data
@@ -2445,7 +2454,6 @@ class GeminiLiveManager:
                 print("[LIVE MIC ANDROID] Запись с микрофона успешно началась.")
 
                 while self.is_live_active and not stop_event.is_set():
-                    # Если модель говорит, можно временно игнорировать микрофон (предотвращаем эхо)
                     if getattr(self, 'model_is_speaking', False):
                         time.sleep(0.05)
                         continue
@@ -2454,7 +2462,6 @@ class GeminiLiveManager:
                     if count > 0:
                         pcm_bytes = bytes(buffer[:count])
 
-                        # Мягкий шумовой барьер (15.0 вместо 80.0, чтобы слышно было отлично)
                         audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
                         rms = np.sqrt(np.mean(audio_array.astype(float) ** 2)) if len(audio_array) > 0 else 0.0
 
@@ -2554,8 +2561,13 @@ class GeminiLiveManager:
 
                             for part in content.model_turn.parts:
                                 if hasattr(part, 'text') and part.text:
-                                    print(f"[LIVE MODEL TEXT]: {part.text}")
-                                    if any(bye in part.text.lower() for bye in ["до свидания", "пока"]):
+                                    model_text = part.text
+                                    print(f"[LIVE MODEL TEXT]: {model_text}")
+
+                                    # ЕСЛИ МОДЕЛЬ ПРИСЛАЛА МАРКЕР СБРОСА — НЕМЕДЛЕННО ВЫХОДИМ
+                                    if "[disconnect]" in model_text.lower() or any(
+                                            bye in model_text.lower() for bye in ["до свидания", "пока"]):
+                                        print("[LIVE] Обнаружена команда завершения сессии. Сбрасываем соединение...")
                                         self.is_live_active = False
                                         return
 
@@ -2630,15 +2642,17 @@ class GeminiLiveManager:
                         if not content.model_turn:
                             continue
 
-                        # Модель начала говорить — ставим флаг
                         self.model_is_speaking = True
 
                         for part in content.model_turn.parts:
                             if hasattr(part, 'text') and part.text:
-                                model_text = part.text.lower()
-                                print(f"[LIVE MODEL TEXT]: {part.text}")
-                                if any(bye in model_text for bye in ["до свидания", "всего доброго", "пока"]):
-                                    print("[LIVE] Обнаружена прощальная фраза модели. Завершаем Live-сессию...")
+                                model_text = part.text
+                                print(f"[LIVE MODEL TEXT]: {model_text}")
+
+                                # ЕСЛИ МОДЕЛЬ ПРИСЛАЛА МАРКЕР СБРОСА — НЕМЕДЛЕННО ВЫХОДИМ
+                                if "[disconnect]" in model_text.lower() or any(
+                                        bye in model_text.lower() for bye in ["до свидания", "пока"]):
+                                    print("[LIVE] Обнаружена команда завершения сессии. Сбрасываем соединение...")
                                     self.is_live_active = False
                                     return
 
@@ -4647,9 +4661,9 @@ class AICameraScreen(BaseScreen):
         try:
             img = cv2.imread(image_path)
             if img is not None:
-                # ЕСЛИ НА ANDROID КАРТИНКА ПОВЕРНУТА БОКОМ, раскомментируйте нужный поворот:
-                # img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-                # или cv2.ROTATE_90_COUNTERCLOCKWISE / cv2.ROTATE_180
+                if platform == 'android':
+                    # Поворачиваем картинку на 90 градусов (попробуйте CLOCKWISE или COUNTERCLOCKWISE, если повернется не в ту сторону)
+                    img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
 
                 h, w, _ = img.shape
                 box_size = int(min(h, w) * 0.6)
@@ -4913,9 +4927,8 @@ class SmartApp(App):
                             return
 
                         try:
-                            # Уменьшаем таймаут с 45 до 8-10 секунд для быстрого перебора
-                            with httpx.Client(timeout=8.0) as client_http:
-                                response = client_http.post(url, json=payload)
+                            # Заменено с httpx на requests
+                            response = requests.post(url, json=payload, timeout=8.0)
 
                             if response.status_code == 200:
                                 data = response.json()
@@ -4965,7 +4978,7 @@ class SmartApp(App):
                             else:
                                 raise RuntimeError(f"API Error {response.status_code}: {response.text}")
 
-                        except (httpx.TimeoutException, httpx.NetworkError) as net_err:
+                        except (requests.Timeout, requests.ConnectionError) as net_err:
                             if attempt < max_retries - 1:
                                 for _ in range(int(delay * 10)):
                                     if self._is_cancelled():
@@ -5000,8 +5013,8 @@ class SmartApp(App):
                 def list(self):
                     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
                     try:
-                        with httpx.Client(timeout=10.0) as client_http:
-                            response = client_http.get(url)
+                        # Заменено с httpx на requests.get
+                        response = requests.get(url, timeout=10.0)
                         if response.status_code == 200:
                             data = response.json()
                             models_list = []
