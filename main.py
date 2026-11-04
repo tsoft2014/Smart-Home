@@ -49,7 +49,14 @@ from io import BytesIO
 from kivy.clock import Clock
 from kivy.uix.camera import Camera  # Импортируем нативный виджет камеры
 from kivy.core.window import Window  # Не забудьте убедиться, что Window импортирован в файле
+from kivy.graphics import Color, Rectangle
+from kivy.core.image import Texture
 
+# Безопасный импорт PIL для обработки пикселей текстуры на Android
+try:
+    from PIL import Image as PilImage
+except ImportError:
+    PilImage = None
 
 # Распаковываем vosk, если папка еще не распакована на устройстве
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2875,6 +2882,7 @@ class MainHubScreen(BaseScreen):
         """Совместимость для озвучки"""
         self.set_processing_state()
 
+    @mainthread
     def reset_assistant_state(self):
         """Единый и полный сброс ассистента в исходный режим ожидания"""
         self.is_speaking_now = False
@@ -3249,26 +3257,31 @@ class MainHubScreen(BaseScreen):
                 lambda dt: self.update_assistant_status("Ошибка: сервер ИИ перегружен", color=(0.8, 0.2, 0.2, 1)), 0)
             Clock.schedule_once(lambda dt: self.reset_assistant_state(), 0)
 
-    @mainthread
     def apply_response_on_main_thread(self, ai_answer):
         self.update_assistant_status("Ответ получен", color=(0.2, 0.85, 0.3, 1))
 
-        # 1. Запускаем озвучку ответа
-        try:
-            clean_speech = self.clean_text_for_tts(ai_answer)
-            if hasattr(self, 'assistant') and self.assistant:
-                self.assistant.speak(clean_speech)
-            elif hasattr(self, 'speak_answer'):
-                self.speak_answer(ai_answer)
-        except Exception as e:
-            print(f"[TTS ERROR]: {e}")
+        # Запускаем процесс в фоновом потоке, чтобы интерфейс оставался живым
+        def background_speak_task():
+            try:
+                clean_speech = self.clean_text_for_tts(ai_answer)
 
-        # 2. Возвращаем кнопку в обычный режим (убираем "Отмена")
-        if hasattr(self, 'set_normal_state'):
-            self.set_normal_state()
+                # Запускаем озвучку (на ПК блокирует поток до конца, на Android работает асинхронно)
+                if hasattr(self, 'assistant') and self.assistant:
+                    self.assistant.speak(clean_speech)
+                elif hasattr(self, 'speak_answer'):
+                    self.speak_answer(ai_answer)
 
-        # 3. Штатное продолжение работы (опрос ESP не прерывается и работает в фоне)
-        print("[ESP] Ответ от сервера получен, работа приложения штатно продолжается.")
+            except Exception as e:
+                print(f"[TTS ERROR]: {e}")
+
+            # СТРОГО ПОСЛЕ окончания речи вызываем ваш полный метод сброса
+            # (он уже оформлен с @mainthread внутри себя, поэтому обновит UI безопасно)
+            self.reset_assistant_state()
+
+        # Стартуем поток озвучки
+        threading.Thread(target=background_speak_task, daemon=True).start()
+
+        print("[ESP] Ответ от сервера получен, озвучка запущенна в фоновом потоке.")
 
     def normalize_numbers_to_words(self, text):
         if not text:
@@ -4454,6 +4467,7 @@ class AICameraSettingsPopup(Popup):
         self.dismiss()
 
 
+
 class AICameraScreen(BaseScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -4621,29 +4635,38 @@ class AICameraScreen(BaseScreen):
 
     @mainthread
     def capture_and_process_ai(self, *args):
-        """Делает снимок, вырезает зону центрального квадрата и отправляет в Gemini"""
+        """Делает снимок через безопасное извлечение пикселей текстуры, исправляет поворот и вырезает зону поиска"""
         image_path = "snapshot_ai.jpg"
 
         if platform == 'android':
             try:
-                # Удаляем старый файл, если он остался
                 if os.path.exists(image_path):
                     os.remove(image_path)
 
-                # На Android сохраняем текущий кадр нативного виджета Camera в файл
-                success = self.img_feed.export_to_png(image_path)
+                texture = self.img_feed.texture
+                if texture and PilImage:
+                    size = texture.size
+                    pixels = texture.pixels
 
-                # Небольшая пауза для гарантированной записи файла на флеш-память
-                time.sleep(0.3)
+                    # Создаем изображение из сырых пикселей виджета камеры
+                    img_pil = PilImage.frombytes(mode='rgba', size=size, data=pixels)
+                    # Корректируем вертикальное зеркалирование OpenGL
+                    img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
+                    img_pil.save(image_path, format='JPEG')
+                    success = True
+                else:
+                    success = False
+
+                time.sleep(0.2)
 
                 if not success or not os.path.exists(image_path):
-                    print("[AI CAMERA ERROR] export_to_png вернул ошибку или файл не создан")
+                    print("[AI CAMERA ERROR] Не удалось извлечь пиксели из текстуры камеры")
                     self.speak_text_safely("Не удалось сделать снимок")
                     return
 
-                print(f"[AI CAMERA] Снимок с Android камеры сохранен: {image_path}")
+                print(f"[AI CAMERA] Снимок с Android камеры успешно сохранен: {image_path}")
             except Exception as e:
-                print(f"[AI CAMERA ERROR] Не удалось сделать снимок на Android: {e}")
+                print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
                 self.speak_text_safely("Не удалось сделать снимок")
                 return
         else:
@@ -4657,12 +4680,12 @@ class AICameraScreen(BaseScreen):
                 return
             cv2.imwrite(image_path, frame)
 
-        # Вырезаем область центрального квадрата (зоны поиска) через OpenCV
+        # Обработка изображения через OpenCV (поворот и вырезка центрального квадрата)
         try:
             img = cv2.imread(image_path)
             if img is not None:
                 if platform == 'android':
-                    # Поворачиваем картинку на 90 градусов (попробуйте CLOCKWISE или COUNTERCLOCKWISE, если повернется не в ту сторону)
+                    # Исправляем поворот на 90 градусов (при необходимости замените на COUNTERCLOCKWISE)
                     img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
 
                 h, w, _ = img.shape
@@ -4675,7 +4698,7 @@ class AICameraScreen(BaseScreen):
 
                 cropped_frame = img[y1:y2, x1:x2]
                 cv2.imwrite(image_path, cropped_frame)
-                print(f"[AI CAMERA] Зона поиска успешно вырезана.")
+                print(f"[AI CAMERA] Зона поиска успешно вырезана и повернута.")
         except Exception as e:
             print(f"[AI CAMERA CROP ERROR]: {e}")
 
