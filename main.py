@@ -3257,31 +3257,26 @@ class MainHubScreen(BaseScreen):
                 lambda dt: self.update_assistant_status("Ошибка: сервер ИИ перегружен", color=(0.8, 0.2, 0.2, 1)), 0)
             Clock.schedule_once(lambda dt: self.reset_assistant_state(), 0)
 
+    @mainthread
     def apply_response_on_main_thread(self, ai_answer):
         self.update_assistant_status("Ответ получен", color=(0.2, 0.85, 0.3, 1))
 
-        # Запускаем процесс в фоновом потоке, чтобы интерфейс оставался живым
-        def background_speak_task():
-            try:
-                clean_speech = self.clean_text_for_tts(ai_answer)
+        # 1. Запускаем озвучку ответа
+        try:
+            clean_speech = self.clean_text_for_tts(ai_answer)
+            if hasattr(self, 'assistant') and self.assistant:
+                self.assistant.speak(clean_speech)
+            elif hasattr(self, 'speak_answer'):
+                self.speak_answer(ai_answer)
+        except Exception as e:
+            print(f"[TTS ERROR]: {e}")
 
-                # Запускаем озвучку (на ПК блокирует поток до конца, на Android работает асинхронно)
-                if hasattr(self, 'assistant') and self.assistant:
-                    self.assistant.speak(clean_speech)
-                elif hasattr(self, 'speak_answer'):
-                    self.speak_answer(ai_answer)
+        # 2. Возвращаем кнопку в обычный режим (убираем "Отмена")
+        if hasattr(self, 'set_normal_state'):
+            self.set_normal_state()
 
-            except Exception as e:
-                print(f"[TTS ERROR]: {e}")
-
-            # СТРОГО ПОСЛЕ окончания речи вызываем ваш полный метод сброса
-            # (он уже оформлен с @mainthread внутри себя, поэтому обновит UI безопасно)
-            self.reset_assistant_state()
-
-        # Стартуем поток озвучки
-        threading.Thread(target=background_speak_task, daemon=True).start()
-
-        print("[ESP] Ответ от сервера получен, озвучка запущенна в фоновом потоке.")
+        # 3. Штатное продолжение работы (опрос ESP не прерывается и работает в фоне)
+        print("[ESP] Ответ от сервера получен, работа приложения штатно продолжается.")
 
     def normalize_numbers_to_words(self, text):
         if not text:
