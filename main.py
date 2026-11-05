@@ -4496,7 +4496,7 @@ class AICameraScreen(BaseScreen):
             if HAS_CAMERA4KIVY:
                 self.img_feed = Preview(
                     size_hint=(1, 1),
-                    orientation='portrait',
+                    #orientation='portrait',
                     aspect_ratio='16:9'
                 )
             else:
