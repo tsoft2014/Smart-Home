@@ -51,12 +51,23 @@ from kivy.uix.camera import Camera  # Импортируем нативный в
 from kivy.core.window import Window  # Не забудьте убедиться, что Window импортирован в файле
 from kivy.graphics import Color, Rectangle
 from kivy.core.image import Texture
+from kivy.graphics import Color, RoundedRectangle, Rectangle
 
-# Безопасный импорт PIL для обработки пикселей текстуры на Android
+# Пытаемся импортировать Camera4Kivy Preview, чтобы избавиться от багов стандартной камеры
+try:
+    from camera4kivy import Preview
+
+    HAS_CAMERA4KIVY = True
+except ImportError:
+    from kivy.uix.camera import Camera
+
+    HAS_CAMERA4KIVY = False
+
 try:
     from PIL import Image as PilImage
 except ImportError:
     PilImage = None
+
 
 # Распаковываем vosk, если папка еще не распакована на устройстве
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -3272,8 +3283,16 @@ class MainHubScreen(BaseScreen):
             print(f"[TTS ERROR]: {e}")
 
         # 2. Возвращаем кнопку в обычный режим (убираем "Отмена")
-        if hasattr(self, 'set_normal_state'):
-            self.set_normal_state()
+        # На ПК код ждет окончания речи, поэтому сбрасываем сразу.
+        # На телефоне speak() не блокирует поток, поэтому откладываем сброс по таймеру.
+        if platform == "android":
+            word_count = len(clean_speech.split())
+            speech_duration = max(2.0, word_count * 0.4 + 1.0)
+            Clock.schedule_once(lambda dt: self.set_normal_state() if hasattr(self, 'set_normal_state') else None,
+                                speech_duration)
+        else:
+            if hasattr(self, 'set_normal_state'):
+                self.set_normal_state()
 
         # 3. Штатное продолжение работы (опрос ESP не прерывается и работает в фоне)
         print("[ESP] Ответ от сервера получен, работа приложения штатно продолжается.")
@@ -4467,17 +4486,27 @@ class AICameraScreen(BaseScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+        # Переменная для сохранения последнего ответа ИИ (для кнопки "Повтор")
+        self.last_ai_response = ""
+
         root_layout = FloatLayout()
 
-        # 1. Слой видео с камеры: на Android используем нативный виджет Camera, на ПК — Image + OpenCV
+        # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy (с фоллбеком на старый Camera), на ПК — Image + OpenCV
         if platform == 'android':
-            self.img_feed = Camera(
-                play=False,
-                resolution=(-1, -1),
-                size_hint=(1, 1),
-                allow_stretch=True,
-                keep_ratio=False
-            )
+            if HAS_CAMERA4KIVY:
+                self.img_feed = Preview(
+                    size_hint=(1, 1),
+                    orientation='portrait',
+                    aspect_ratio='16:9'
+                )
+            else:
+                self.img_feed = Camera(
+                    play=False,
+                    resolution=(-1, -1),
+                    size_hint=(1, 1),
+                    allow_stretch=True,
+                    keep_ratio=False
+                )
         else:
             self.img_feed = Image(
                 size_hint=(1, 1),
@@ -4499,7 +4528,7 @@ class AICameraScreen(BaseScreen):
             pos_hint={'top': 1}
         )
         with top_container.canvas.before:
-            Color(0, 0, 0, 0.5)
+            Color(0, 0, 0, 0.4)
             self.top_rect = Rectangle(size=top_container.size, pos=top_container.pos)
         top_container.bind(
             size=lambda inst, val: setattr(self.top_rect, 'size', val),
@@ -4546,7 +4575,7 @@ class AICameraScreen(BaseScreen):
         top_container.add_widget(top_bar)
         root_layout.add_widget(top_container)
 
-        # 4. НИЖНЯЯ ПАНЕЛЬ
+        # 4. НИЖНЯЯ ПАНЕЛЬ С КНОПКАМИ УПРАВЛЕНИЯ
         bottom_container = BoxLayout(
             orientation='vertical',
             size_hint=(1, None),
@@ -4554,7 +4583,7 @@ class AICameraScreen(BaseScreen):
             pos_hint={'bottom': 1}
         )
         with bottom_container.canvas.before:
-            Color(0, 0, 0, 0.6)
+            Color(0, 0, 0, 0.5)
             self.bottom_rect = Rectangle(size=bottom_container.size, pos=bottom_container.pos)
         bottom_container.bind(
             size=lambda inst, val: setattr(self.bottom_rect, 'size', val),
@@ -4563,6 +4592,21 @@ class AICameraScreen(BaseScreen):
 
         bottom_bar = FloatLayout(size_hint=(1, 1))
 
+        # Кнопка слева: ПОВТОР (значок круговой стрелки ⟳, белый цвет)
+        self.btn_repeat = Button(
+            text="R",  # Или просто буква "R" / "Повтор"
+            font_size='20sp',
+            size_hint=(None, None),
+            size=(dp(55), dp(55)),
+            pos_hint={'x': 0.1, 'center_y': 0.5},
+            background_normal='',
+            background_color=(0, 0, 0, 0.4),
+            color=(1, 1, 1, 1)
+        )
+        self.btn_repeat.bind(on_press=lambda x: self.repeat_last_response())
+        bottom_bar.add_widget(self.btn_repeat)
+
+        # Кнопка по центру: СНИМОК
         self.btn_capture = RoundCaptureButton(
             size_hint=(None, None),
             size=(dp(70), dp(70)),
@@ -4570,6 +4614,21 @@ class AICameraScreen(BaseScreen):
         )
         self.btn_capture.bind(on_press=lambda x: self.capture_and_process_ai())
         bottom_bar.add_widget(self.btn_capture)
+
+        # Кнопка справа: ОТМЕНА ОЗВУЧКИ (значок крестика ✕, белый цвет)
+        self.btn_stop_speech = Button(
+            text="X",  # Латинская крестик-буква X вместо юникод-символа
+            font_size='20sp',
+            bold=True,
+            size_hint=(None, None),
+            size=(dp(55), dp(55)),
+            pos_hint={'right': 0.9, 'center_y': 0.5},
+            background_normal='',
+            background_color=(0, 0, 0, 0.4),
+            color=(1, 1, 1, 1)
+        )
+        self.btn_stop_speech.bind(on_press=lambda x: self.stop_speech())
+        bottom_bar.add_widget(self.btn_stop_speech)
 
         bottom_container.add_widget(bottom_bar)
         root_layout.add_widget(bottom_container)
@@ -4589,8 +4648,11 @@ class AICameraScreen(BaseScreen):
 
     def on_enter(self):
         if platform == 'android':
-            if hasattr(self.img_feed, 'play'):
-                self.img_feed.play = True
+            if HAS_CAMERA4KIVY:
+                Clock.schedule_once(lambda dt: self.img_feed.connect_camera(camera_id='back'), 0.5)
+            else:
+                if hasattr(self.img_feed, 'play'):
+                    self.img_feed.play = True
         else:
             try:
                 self.capture = cv2.VideoCapture(0, cv2.CAP_ANY)
@@ -4616,8 +4678,11 @@ class AICameraScreen(BaseScreen):
 
     def on_leave(self):
         if platform == 'android':
-            if hasattr(self.img_feed, 'play'):
-                self.img_feed.play = False
+            if HAS_CAMERA4KIVY:
+                self.img_feed.disconnect_camera()
+            else:
+                if hasattr(self.img_feed, 'play'):
+                    self.img_feed.play = False
         else:
             Clock.unschedule(self.update_frame)
             self._texture = None
@@ -4630,32 +4695,30 @@ class AICameraScreen(BaseScreen):
 
     @mainthread
     def capture_and_process_ai(self, *args):
-        """Делает снимок через безопасное извлечение пикселей текстуры, исправляет поворот и вырезает зону поиска"""
+        """Делает снимок через Camera4Kivy export_to_png или OpenCV (на ПК), затем вырезает зону поиска"""
         image_path = "snapshot_ai.jpg"
+
+        if os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+            except Exception:
+                pass
 
         if platform == 'android':
             try:
-                if os.path.exists(image_path):
-                    os.remove(image_path)
-
-                texture = self.img_feed.texture
-                if texture and PilImage:
-                    size = texture.size
-                    pixels = texture.pixels
-
-                    # Создаем изображение из сырых пикселей виджета камеры
-                    img_pil = PilImage.frombytes(mode='rgba', size=size, data=pixels)
-                    # Корректируем вертикальное зеркалирование OpenGL
-                    img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
-                    img_pil.save(image_path, format='JPEG')
-                    success = True
+                if HAS_CAMERA4KIVY:
+                    self.img_feed.export_to_png(image_path)
                 else:
-                    success = False
+                    texture = self.img_feed.texture
+                    if texture and PilImage:
+                        img_pil = PilImage.frombytes(mode='rgba', size=texture.size, data=texture.pixels)
+                        img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
+                        img_pil.save(image_path, format='JPEG')
 
-                time.sleep(0.2)
+                time.sleep(0.3)
 
-                if not success or not os.path.exists(image_path):
-                    print("[AI CAMERA ERROR] Не удалось извлечь пиксели из текстуры камеры")
+                if not os.path.exists(image_path):
+                    print("[AI CAMERA ERROR] Не удалось сохранить снимок с камеры телефона")
                     self.speak_text_safely("Не удалось сделать снимок")
                     return
 
@@ -4675,14 +4738,10 @@ class AICameraScreen(BaseScreen):
                 return
             cv2.imwrite(image_path, frame)
 
-        # Обработка изображения через OpenCV (поворот и вырезка центрального квадрата)
+        # Обработка изображения через OpenCV (вырезка центрального квадрата / зоны поиска)
         try:
             img = cv2.imread(image_path)
             if img is not None:
-                if platform == 'android':
-                    # Исправляем поворот на 90 градусов (при необходимости замените на COUNTERCLOCKWISE)
-                    img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-
                 h, w, _ = img.shape
                 box_size = int(min(h, w) * 0.6)
                 cx, cy = w // 2, h // 2
@@ -4693,7 +4752,7 @@ class AICameraScreen(BaseScreen):
 
                 cropped_frame = img[y1:y2, x1:x2]
                 cv2.imwrite(image_path, cropped_frame)
-                print(f"[AI CAMERA] Зона поиска успешно вырезана и повернута.")
+                print(f"[AI CAMERA] Зона поиска успешно вырезана.")
         except Exception as e:
             print(f"[AI CAMERA CROP ERROR]: {e}")
 
@@ -4711,20 +4770,100 @@ class AICameraScreen(BaseScreen):
                     response_text = app.send_ai_request(prompt_text, image_path=image_path)
                 else:
                     print("[AI VISION ERROR] В главном приложении не найдена функция send_ai_request")
-                    self.speak_text_safely("Ошибка конфигурации приложения")
+                    Clock.schedule_once(lambda dt: self.speak_text_safely("Ошибка конфигурации приложения"), 0)
                     return
 
                 if response_text:
                     print(f"[AI VISION] Ответ получен: {response_text}")
-                    self.speak_text_safely(response_text)
+                    self.last_ai_response = response_text
+                    Clock.schedule_once(lambda dt: self.speak_text_safely(response_text), 0)
                 else:
-                    self.speak_text_safely("Не удалось получить ответ от ИИ")
+                    Clock.schedule_once(lambda dt: self.speak_text_safely("Не удалось получить ответ от ИИ"), 0)
 
             except Exception as e:
                 print(f"[AI VISION ERROR]: {e}")
-                self.speak_text_safely("Произошла ошибка при анализе изображения")
+                Clock.schedule_once(lambda dt: self.speak_text_safely("Произошла ошибка при анализе изображения"), 0)
 
         threading.Thread(target=vision_thread, daemon=True).start()
+
+    def repeat_last_response(self):
+        """Повторяет последний озвученный ответ ИИ"""
+        if self.last_ai_response:
+            print("[AI CAMERA] Повторяем последний ответ...")
+            self.speak_text_safely(self.last_ai_response)
+        else:
+            print("[AI CAMERA] Нет сохраненного ответа для повтора")
+            self.speak_text_safely("Сначала сделайте снимок")
+
+    def stop_speech(self):
+        """Безопасная остановка речи и принудительный сброс pyttsx3"""
+        print("[AI CAMERA] Нажата кнопка 'Стоп'")
+        try:
+            app = App.get_running_app()
+            assistant = getattr(app, 'assistant', None) or getattr(app, 'voice_assistant', None) if app else None
+
+            # 1. Пробуем вызвать методы остановки у ассистента или приложения
+            for method_name in ['stop_current_speech', 'stop_speech']:
+                if assistant and hasattr(assistant, method_name) and callable(getattr(assistant, method_name)):
+                    try:
+                        getattr(assistant, method_name)()
+                        break
+                    except Exception:
+                        pass
+
+                if app and hasattr(app, method_name) and callable(getattr(app, method_name)):
+                    try:
+                        getattr(app, method_name)()
+                        break
+                    except Exception:
+                        pass
+
+            # 2. Принудительно глушим движок pyttsx3 везде, включая endLoop для разрыва блокировки SAPI5
+            for obj in [assistant, app, self]:
+                if obj and hasattr(obj, 'tts_engine') and obj.tts_engine:
+                    try:
+                        obj.tts_engine.stop()
+                    except Exception:
+                        pass
+                    try:
+                        obj.tts_engine.endLoop()
+                    except Exception:
+                        pass
+                    obj.tts_engine = None
+
+            if app:
+                app.tts_engine = None
+                app.is_processing = False
+                app.is_speaking_now = False
+
+            # Сбрасываем флаги на самой камере
+            self.is_processing = False
+            self.is_speaking_now = False
+
+            print("[AI CAMERA] Озвучка успешно прервана.")
+        except Exception as e:
+            print(f"[AI CAMERA ERROR] Ошибка остановки: {e}")
+        finally:
+            # Сброс интерфейса и кнопки делаем строго здесь, чтобы гарантированно вернуть всё в исходное состояние
+            if hasattr(self, 'reset_assistant_state'):
+                self.reset_assistant_state()
+
+    def stop_current_speech(self):
+        """Псевдоним для полной совместимости"""
+        return self.stop_speech()
+
+    def on_ai_button_pressed(self, instance):
+        """Универсальный обработчик (аналог главного экрана)"""
+        if getattr(self, 'is_speaking_now', False) or getattr(self, 'is_processing', False):
+            print("[AI CAMERA] Прерывание процесса по клику на кнопку отмены.")
+            # stop_speech уже вызывает reset_assistant_state внутри себя,
+            # поэтому здесь достаточно вызвать один метод без задвоения
+            self.stop_current_speech()
+        else:
+            if hasattr(self, 'set_processing_state'):
+                self.set_processing_state()
+            if hasattr(self, 'send_assistant_command'):
+                self.send_assistant_command(instance)
 
     def speak_text_safely(self, text):
         app = App.get_running_app()
@@ -4741,7 +4880,7 @@ class AICameraScreen(BaseScreen):
             except Exception as e:
                 print(f"[TTS CLEAN ERROR]: {e}")
 
-        import re
+        # re уже импортирован в самом верху файла main2_2.py
         cleaned_text = re.sub(r'\*+', '', cleaned_text)
         cleaned_text = cleaned_text.replace('#', '')
         cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
@@ -4766,7 +4905,6 @@ class AICameraScreen(BaseScreen):
 
         if not spoken:
             print(f"[TTS MOCK]: {cleaned_text}")
-
 
 class SmartApp(App):
     def __init__(self, **kwargs):
@@ -5267,6 +5405,16 @@ class SmartApp(App):
                 sm.get_screen('smarthome').temp_label.text = f"Температура: {temp_str} °C"
 
         Clock.schedule_once(update_ui, 0)
+
+    def stop_current_speech(self):
+        """Прямая остановка глобального движка без перенаправления на экраны"""
+        print("[SmartApp] Принудительная остановка речи...")
+        try:
+            if hasattr(self, 'tts_engine') and self.tts_engine:
+                self.tts_engine.stop()
+                self.tts_engine = None
+        except Exception as e:
+            print(f"[SmartApp] Ошибка остановки: {e}")
 
     def turn_all_on(self):
         for lamp in self.lamp_objects:
