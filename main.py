@@ -53,6 +53,8 @@ from kivy.graphics import Color, Rectangle
 from kivy.core.image import Texture
 from kivy.graphics import Color, RoundedRectangle, Rectangle
 
+
+
 # Пытаемся импортировать Camera4Kivy Preview, чтобы избавиться от багов стандартной камеры
 try:
     from camera4kivy import Preview
@@ -546,6 +548,10 @@ class VoiceAssistant:
         # Запускаем фоновое отслеживание таймаута каждую секунду
         self.start_activity_timer()
 
+        self.is_speaking = False
+        self.last_spoken_text = ""
+        self.current_engine = None  # Ссылка на активный движок pyttsx3 для экстренной остановки
+
     def start_activity_timer(self):
         # Отменяем предыдущий запуск, если он был, чтобы не плодить дубликаты
         if self.assistant_event:
@@ -559,6 +565,33 @@ class VoiceAssistant:
             self.assistant_event.cancel()
             self.assistant_event = None
 
+    def stop(self):
+        """Экстренная остановка речи (вызывается по кнопке Стоп)"""
+        print("[TTS] Принудительный сброс движка озвучки...")
+
+        # 1. Останавливаем pyttsx3 на ПК
+        if self.current_engine:
+            try:
+                self.current_engine.stop()
+            except Exception:
+                pass
+            try:
+                self.current_engine.endLoop()
+            except Exception:
+                pass
+            self.current_engine = None
+
+        # 2. Останавливаем на Android, если поддерживается
+        if platform == "android":
+            try:
+                global _android_tts
+                if _android_tts is not None:
+                    _android_tts.stop()
+            except Exception:
+                pass
+
+        self.is_speaking = False
+
     def speak(self, text, on_done_callback=None):
         if not text or not str(text).strip():
             if on_done_callback:
@@ -566,73 +599,69 @@ class VoiceAssistant:
             return
 
         if self.is_speaking:
-            if on_done_callback:
-                on_done_callback()
-            return
+            # Если уже говорит, принудительно сбрасываем предыдущую речь перед новой
+            self.stop()
 
         text = str(text).strip()
-
-        # --- ЗАПОМИНАЕМ ТЕКСТ ДЛЯ АНТИ-ЭХО ФИЛЬТРА ---
         self.last_spoken_text = text.lower()
 
-        # ---------------------------------------------
-
         def _say_thread(cb=on_done_callback):
-            with tts_lock:
-                self.is_speaking = True
+            self.is_speaking = True
+            engine = None
+            pythoncom_imported = False
 
-                try:
-                    if platform == "android":
-                        try:
-                            if _android_tts is not None:
-                                HashMap = autoclass("java.util.HashMap")
-                                params = HashMap()
-                                _android_tts.speak(text, 0, params)
-                        except Exception as e:
-                            print(f"[ANDROID TTS ERROR]: {e}")
-                    else:
-                        pythoncom_imported = False
-                        engine = None
+            try:
+                if platform == "android":
+                    try:
+                        if _android_tts is not None:
+                            HashMap = autoclass("java.util.HashMap")
+                            params = HashMap()
+                            _android_tts.speak(text, 0, params)
+                    except Exception as e:
+                        print(f"[ANDROID TTS ERROR]: {e}")
+                else:
+                    try:
+                        import pythoncom
+                        pythoncom.CoInitialize()
+                        pythoncom_imported = True
+                    except ImportError:
+                        pass
 
-                        try:
-                            try:
-                                import pythoncom
-                                pythoncom.CoInitialize()
-                                pythoncom_imported = True
-                            except ImportError:
-                                pass
+                    import pyttsx3
+                    engine = pyttsx3.init()
 
-                            import pyttsx3
+                    # Сохраняем ссылку на движок в класс, чтобы метод stop() мог его прибить
+                    self.current_engine = engine
 
-                            engine = pyttsx3.init()
-                            engine.setProperty("rate", 170)
-                            engine.say(text)
-                            engine.runAndWait()
-                            engine.stop()
+                    engine.setProperty("rate", 170)
+                    engine.say(text)
+                    engine.runAndWait()
 
-                        except Exception as e:
-                            print(f"[PC TTS ERROR]: {e}")
+            except Exception as e:
+                print(f"[PC TTS ERROR]: {e}")
 
-                        finally:
-                            try:
-                                if engine:
-                                    del engine
-                            except Exception:
-                                pass
+            finally:
+                # Очищаем движок по завершении речи
+                if engine:
+                    try:
+                        engine.stop()
+                        engine.endLoop()
+                    except Exception:
+                        pass
 
-                            if pythoncom_imported:
-                                try:
-                                    import pythoncom
-                                    pythoncom.CoUninitialize()
-                                except Exception:
-                                    pass
+                if self.current_engine == engine:
+                    self.current_engine = None
 
-                    time.sleep(0.15)
+                if pythoncom_imported:
+                    try:
+                        import pythoncom
+                        pythoncom.CoUninitialize()
+                    except Exception:
+                        pass
 
-                finally:
-                    self.is_speaking = False
-                    if cb:
-                        cb()
+                self.is_speaking = False
+                if cb:
+                    cb()
 
         threading.Thread(target=_say_thread, daemon=True).start()
 
@@ -2750,52 +2779,58 @@ class MainHubScreen(BaseScreen):
         self.assistant_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         root_layout.add_widget(self.assistant_label)
 
-        # 2. Строка ввода запроса ассистенту (сделана резиновой по ширине)
+        # 1. Контейнер
         assistant_row = BoxLayout(
             orientation='horizontal',
             size_hint=(1, None),
-            height=dp(42),
             spacing=dp(6),
             pos_hint={'center_x': 0.5, 'top': 0.82},
             padding=[dp(15), 0, dp(15), 0]
         )
 
-        # 1. Многострочный ввод с авто-расширением вниз
+        # 2. Многострочный ввод с точной стартовой высотой 42dp
         self.assistant_input = TextInput(
             text="",
             hint_text="Введите запрос ассистенту...",
-            multiline=True,  # Включаем многострочный режим для переноса текста
+            multiline=True,
             size_hint_x=0.78,
-            size_hint_y=None,  # Отключаем авто-высоту по вертикали для ручного управления
-            height=dp(42),  # Стартовая высота под одну строку
+            size_hint_y=None,
+            height=dp(42),  # Жестко фиксируем стартовую высоту, как у кнопки
             font_size='13sp',
             halign='center',
             background_color=(0.15, 0.17, 0.22, 1),
             foreground_color=(1, 1, 1, 1),
+            # Аккуратные отступы, чтобы текст был по центру одной строки
             padding=[dp(8), dp(10), dp(8), dp(8)]
         )
 
-        # Привязываем рост высоты инпута к количеству строк текста
-        self.assistant_input.bind(
-            minimum_height=self.assistant_input.setter('height')
-        )
+        # Функция для плавного роста инпута вниз только когда строк становится больше одной
+        def update_input_height(instance, value):
+            # Если минимальная высота стала больше 42dp (появилась 2-я строка), разрешаем расти
+            if value > dp(42):
+                instance.height = value
+            else:
+                instance.height = dp(42)
+
+        # Привязываем динамический рост к minimum_height
+        self.assistant_input.bind(minimum_height=update_input_height)
         assistant_row.add_widget(self.assistant_input)
 
-        # 2. Кнопка AI
+        # 3. Кнопка AI (строго 42dp)
         self.btn_send = FixedButton(
             text="AI",
-            font_size=sp(14),  # Вместо 13
+            font_size=sp(14),
             bold=True,
             bg_color=(0.18, 0.5, 0.25, 1),
             size_hint_x=0.22,
-            size_hint_y=None,  # Фиксируем высоту кнопки, чтобы она не растягивалась
-            height=dp(42)
+            size_hint_y=None,
+            height=dp(42),
+            pos_hint={'top': 1}  # Держится сверху, когда инпут растет вниз
         )
         self.btn_send.bind(on_press=self.on_ai_button_pressed)
         assistant_row.add_widget(self.btn_send)
 
-        # 3. Делаем так, чтобы сам контейнер assistant_row подстраивался под высоту инпута
-        assistant_row.size_hint_y = None
+        # Контейнер подстраивается под высоту инпута
         assistant_row.bind(minimum_height=assistant_row.setter('height'))
 
         root_layout.add_widget(assistant_row)
@@ -2875,8 +2910,7 @@ class MainHubScreen(BaseScreen):
         """Универсальный обработчик: Отмена текущего процесса ИЛИ отправка запроса"""
         if getattr(self, 'is_speaking_now', False) or getattr(self, 'is_processing', False):
             print("[UI] Прерывание процесса по клику на кнопку отмены.")
-            self.stop_current_speech()  # Останавливаем озвучку и сбрасываем статус
-            self.reset_assistant_state()  # Возвращаем кнопку в режим 'AI'
+            self.stop_current_speech()  # Она сама остановит звук и вызовет reset_assistant_state()
         else:
             # Иначе переводим в режим обработки и шлем запрос
             self.set_processing_state()
@@ -2894,7 +2928,7 @@ class MainHubScreen(BaseScreen):
         self.set_processing_state()
 
     @mainthread
-    def reset_assistant_state(self):
+    def reset_assistant_state(self, clear_input=False):
         """Единый и полный сброс ассистента в исходный режим ожидания"""
         self.is_speaking_now = False
         self.is_processing = False
@@ -2904,16 +2938,16 @@ class MainHubScreen(BaseScreen):
         if app:
             app.is_ai_busy = False
 
-        # 1. Очищаем поле ввода
-        if hasattr(self, 'assistant_input'):
+        # Очищаем поле ввода ТОЛЬКО если явно передан флаг clear_input=True
+        if clear_input and hasattr(self, 'assistant_input'):
             self.assistant_input.text = ""
 
-        # 2. Возвращаем кнопку в зеленый режим 'AI'
+        # Возвращаем кнопку в зеленый режим 'AI'
         if hasattr(self, 'btn_send'):
             self.btn_send.text = "AI"
             self.btn_send.bg_color = (0.18, 0.5, 0.25, 1)
 
-        # 3. Возвращаем метку статуса в режим ожидания
+        # Возвращаем метку статуса в режим ожидания
         ai_word = "Алиса"
         if app and hasattr(app, 'config_data'):
             raw_ai = app.config_data.get("wake_word_ai", "алиса")
@@ -2921,22 +2955,36 @@ class MainHubScreen(BaseScreen):
 
         self.update_assistant_status(f"Ассистент: Ожидание («{ai_word}»)", color=(0.6, 0.6, 0.6, 1))
 
-        # 4. Безопасно возобновляем фоновый опрос датчиков ESP
+        # Возобновляем фоновый опрос датчиков ESP
         if hasattr(self, 'resume_sensor_polling'):
             self.resume_sensor_polling()
 
     def stop_current_speech(self):
-        """Принудительная остановка озвучки и сброс движка pyttsx3"""
+        """Принудительная остановка озвучки и сброс интерфейса"""
         print("[UI] Принудительная остановка озвучки...")
         try:
+            app = App.get_running_app()
+
+            # 1. Находим ассистента и вызываем его метод stop() (там где крутится pyttsx3 / android tts)
+            assistant = getattr(app, 'assistant', None) or getattr(app, 'voice_assistant', None) if app else None
+            if assistant and hasattr(assistant, 'stop'):
+                assistant.stop()
+                print("[UI] Команда stop() успешно отправлена ассистенту.")
+
+            # 2. Страховка: если у экрана есть свой локальный tts_engine
             if hasattr(self, 'tts_engine') and self.tts_engine:
-                self.tts_engine.stop()
-            print("[UI] Озвучка успешно прервана.")
+                try:
+                    self.tts_engine.stop()
+                    self.tts_engine.endLoop()
+                except Exception:
+                    pass
+                self.tts_engine = None
+
         except Exception as e:
             print(f"[UI] Ошибка при остановке речи: {e}")
         finally:
-            self.tts_engine = None
-            self.reset_assistant_state()
+            # Сбрасываем состояние и очищаем поле ввода, так как пользователь нажал отмену
+            self.reset_assistant_state(clear_input=True)
 
     def terminate_live_session(self, instance):
         """Штатный и безопасный сброс Live-сессии с полным возвратом в Vosk"""
@@ -3011,10 +3059,24 @@ class MainHubScreen(BaseScreen):
     def update_assistant_status(self, text, color=(0.6, 0.6, 0.6, 1)):
         print(f"[DEBUG MAIN SCREEN] Метод запущен. Текст: '{text}', Цвет: {color}")
 
-        if hasattr(self, 'assistant_label') and self.assistant_label:
-            print(
-                f"[DEBUG MAIN SCREEN] Метка assistant_label найдена! Текущий текст был: '{self.assistant_label.text}'")
+        # Ищем именно метку статуса (например, в ids или отдельный атрибут),
+        # НИКОГДА не используя assistant_label, если она связана с полем ввода!
+        target_label = None
 
+        if hasattr(self, 'ids') and 'assistant_status_label' in self.ids:
+            target_label = self.ids.assistant_status_label
+        elif hasattr(self, 'status_label') and self.status_label:
+            target_label = self.status_label
+        elif hasattr(self, 'assistant_label') and self.assistant_label:
+            # Защита: проверяем, что это НЕ поле ввода
+            from kivy.uix.textinput import TextInput
+            if not isinstance(self.assistant_label, TextInput):
+                target_label = self.assistant_label
+            else:
+                print(
+                    "[DEBUG WARNING] assistant_label указывает на TextInput! Пропускаем, чтобы не портить строку ввода.")
+
+        if target_label:
             app = App.get_running_app()
             ai_word = "Алиса"
             if app and hasattr(app, 'config_data'):
@@ -3024,12 +3086,13 @@ class MainHubScreen(BaseScreen):
             if "ожидание" in text.lower():
                 text = f"Ассистент: Ожидание («{ai_word}»)"
 
-            self.assistant_label.text = text
-            self.assistant_label.color = color
+            target_label.text = text
+            if hasattr(target_label, 'color'):
+                target_label.color = color
 
-            print(f"[DEBUG MAIN SCREEN] Успешно установлено! Новый текст метки: '{self.assistant_label.text}'")
+            print(f"[DEBUG MAIN SCREEN] Статус успешно обновлен в метке: '{target_label.text}'")
         else:
-            print(f"[DEBUG MAIN SCREEN ERROR] Упс! Метка assistant_label НЕ НАЙДЕНА на экране MainHubScreen!")
+            print(f"[DEBUG MAIN SCREEN ERROR] Отдельная метка статуса не найдена, текст '{text}' выведен в консоль.")
 
     def receive_voice_query(self, query):
         print(f"[MAIN SCREEN] Получен голосовой запрос: '{query}'")
@@ -3272,29 +3335,19 @@ class MainHubScreen(BaseScreen):
     def apply_response_on_main_thread(self, ai_answer):
         self.update_assistant_status("Ответ получен", color=(0.2, 0.85, 0.3, 1))
 
-        # 1. Запускаем озвучку ответа
+        # 1. Запускаем озвучку ответа.
+        # Больше здесь ничего не сбрасываем — сбросом управляет сама озвучка по окончании!
         try:
-            clean_speech = self.clean_text_for_tts(ai_answer)
             if hasattr(self, 'assistant') and self.assistant:
-                self.assistant.speak(clean_speech)
+                self.assistant.speak(ai_answer)
             elif hasattr(self, 'speak_answer'):
                 self.speak_answer(ai_answer)
         except Exception as e:
             print(f"[TTS ERROR]: {e}")
-
-        # 2. Возвращаем кнопку в обычный режим (убираем "Отмена")
-        # На ПК код ждет окончания речи, поэтому сбрасываем сразу.
-        # На телефоне speak() не блокирует поток, поэтому откладываем сброс по таймеру.
-        if platform == "android":
-            word_count = len(clean_speech.split())
-            speech_duration = max(2.0, word_count * 0.4 + 1.0)
-            Clock.schedule_once(lambda dt: self.set_normal_state() if hasattr(self, 'set_normal_state') else None,
-                                speech_duration)
-        else:
+            # Если вдруг произошла ошибка, сразу возвращаем кнопку в норму, чтобы она не зависла
             if hasattr(self, 'set_normal_state'):
                 self.set_normal_state()
 
-        # 3. Штатное продолжение работы (опрос ESP не прерывается и работает в фоне)
         print("[ESP] Ответ от сервера получен, работа приложения штатно продолжается.")
 
     def normalize_numbers_to_words(self, text):
@@ -3368,7 +3421,7 @@ class MainHubScreen(BaseScreen):
         return text.strip()
 
     def speak_answer(self, text):
-        """Озвучивает ответ ассистента с возможностью принудительной остановки"""
+        """Озвучивает ответ ассистента и сбрасывает статус строго ПО ОКОНЧАНИИ речи"""
         if not text:
             return
 
@@ -3376,7 +3429,7 @@ class MainHubScreen(BaseScreen):
 
         # --- БЛОКИРУЕМ МИКРОФОН ОТ ЭХА ---
         self.is_assistant_speaking = True
-        self.last_spoken_text = clean_text.strip().lower()  # Запоминаем, что именно сказали
+        self.last_spoken_text = clean_text.strip().lower()
         # ---------------------------------
 
         self.set_cancel_state()  # Переводим в состояние отмены/озвучки
@@ -3385,23 +3438,45 @@ class MainHubScreen(BaseScreen):
             try:
                 print(f"[TTS] Озвучиваю: {clean_text}")
                 import pyttsx3
-                self.tts_engine = pyttsx3.init()
-                self.tts_engine.say(clean_text)
-                self.tts_engine.runAndWait()
+                engine = pyttsx3.init()
+                self.tts_engine = engine
+                engine.say(clean_text)
+                engine.runAndWait()  # На ПК поток ждет здесь до полного окончания речи!
             except ImportError:
+                # Для Android, где pyttsx3 нет
                 try:
                     from plyer import tts
                     tts.speak(clean_text)
+                    # Так как plyer не блокирует поток, на Android делаем паузу по длине текста
+                    import time
+                    word_count = len(clean_text.split())
+                    time.sleep(max(2.0, word_count * 0.4 + 1.0))
                 except Exception as e_plyer:
                     print(f"[TTS ERROR] Plyer недоступен: {e_plyer}")
             except Exception as e:
                 print(f"[TTS ERROR] Ошибка озвучки: {e}")
             finally:
+                # Безопасно гасим движок
+                try:
+                    if hasattr(self, 'tts_engine') and self.tts_engine:
+                        self.tts_engine.stop()
+                        self.tts_engine.endLoop()
+                except Exception:
+                    pass
+
                 self.tts_engine = None
-                from kivy.clock import Clock
-                # Даем небольшую паузу (0.8с) перед разблокировкой микрофона,
-                # чтобы звуковой хвост в комнате/динамике полностью затух
+
+                from kivy.clock import Clock, mainthread
+                # 1. Даем паузу перед разблокировкой микрофона
                 Clock.schedule_once(lambda dt: self._release_mic(), 0.8)
+
+                # 2. ВСЁ ЗАКОНЧИЛОСЬ: возвращаем кнопку в режим 'AI' из главного потока
+                @mainthread
+                def finish_speech(dt):
+                    if hasattr(self, 'set_normal_state'):
+                        self.set_normal_state()
+
+                Clock.schedule_once(finish_speech, 0.1)
 
         import threading
         threading.Thread(target=_run_tts, daemon=True).start()
@@ -4496,8 +4571,7 @@ class AICameraScreen(BaseScreen):
             if HAS_CAMERA4KIVY:
                 self.img_feed = Preview(
                     size_hint=(1, 1),
-                    #orientation='portrait',
-                    aspect_ratio='16:9'
+                    aspect_ratio='fill'  # Растягиваем на весь экран под портрет
                 )
             else:
                 self.img_feed = Camera(
@@ -4592,9 +4666,9 @@ class AICameraScreen(BaseScreen):
 
         bottom_bar = FloatLayout(size_hint=(1, 1))
 
-        # Кнопка слева: ПОВТОР (значок круговой стрелки ⟳, белый цвет)
+        # Кнопка слева: ПОВТОР
         self.btn_repeat = Button(
-            text="R",  # Или просто буква "R" / "Повтор"
+            text="R",
             font_size='20sp',
             size_hint=(None, None),
             size=(dp(55), dp(55)),
@@ -4615,9 +4689,9 @@ class AICameraScreen(BaseScreen):
         self.btn_capture.bind(on_press=lambda x: self.capture_and_process_ai())
         bottom_bar.add_widget(self.btn_capture)
 
-        # Кнопка справа: ОТМЕНА ОЗВУЧКИ (значок крестика ✕, белый цвет)
+        # Кнопка справа: ОТМЕНА ОЗВУЧКИ
         self.btn_stop_speech = Button(
-            text="X",  # Латинская крестик-буква X вместо юникод-символа
+            text="X",
             font_size='20sp',
             bold=True,
             size_hint=(None, None),
@@ -4649,7 +4723,14 @@ class AICameraScreen(BaseScreen):
     def on_enter(self):
         if platform == 'android':
             if HAS_CAMERA4KIVY:
-                Clock.schedule_once(lambda dt: self.img_feed.connect_camera(camera_id='back'), 0.5)
+                # Явно передаем ориентацию portrait при подключении камеры
+                Clock.schedule_once(
+                    lambda dt: self.img_feed.connect_camera(
+                        camera_id='back',
+                        orientation='portrait'
+                    ), 
+                    0.5
+                )
             else:
                 if hasattr(self.img_feed, 'play'):
                     self.img_feed.play = True
@@ -4725,6 +4806,7 @@ class AICameraScreen(BaseScreen):
                 print(f"[AI CAMERA] Снимок с Android камеры успешно сохранен: {image_path}")
             except Exception as e:
                 print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
+                print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
                 self.speak_text_safely("Не удалось сделать снимок")
                 return
         else:
@@ -4795,69 +4877,25 @@ class AICameraScreen(BaseScreen):
             print("[AI CAMERA] Нет сохраненного ответа для повтора")
             self.speak_text_safely("Сначала сделайте снимок")
 
-    def stop_speech(self):
-        """Безопасная остановка речи и принудительный сброс pyttsx3"""
-        print("[AI CAMERA] Нажата кнопка 'Стоп'")
-        try:
-            app = App.get_running_app()
-            assistant = getattr(app, 'assistant', None) or getattr(app, 'voice_assistant', None) if app else None
-
-            # 1. Пробуем вызвать методы остановки у ассистента или приложения
-            for method_name in ['stop_current_speech', 'stop_speech']:
-                if assistant and hasattr(assistant, method_name) and callable(getattr(assistant, method_name)):
-                    try:
-                        getattr(assistant, method_name)()
-                        break
-                    except Exception:
-                        pass
-
-                if app and hasattr(app, method_name) and callable(getattr(app, method_name)):
-                    try:
-                        getattr(app, method_name)()
-                        break
-                    except Exception:
-                        pass
-
-            # 2. Принудительно глушим движок pyttsx3 везде, включая endLoop для разрыва блокировки SAPI5
-            for obj in [assistant, app, self]:
-                if obj and hasattr(obj, 'tts_engine') and obj.tts_engine:
-                    try:
-                        obj.tts_engine.stop()
-                    except Exception:
-                        pass
-                    try:
-                        obj.tts_engine.endLoop()
-                    except Exception:
-                        pass
-                    obj.tts_engine = None
-
-            if app:
-                app.tts_engine = None
-                app.is_processing = False
-                app.is_speaking_now = False
-
-            # Сбрасываем флаги на самой камере
-            self.is_processing = False
-            self.is_speaking_now = False
-
-            print("[AI CAMERA] Озвучка успешно прервана.")
-        except Exception as e:
-            print(f"[AI CAMERA ERROR] Ошибка остановки: {e}")
-        finally:
-            # Сброс интерфейса и кнопки делаем строго здесь, чтобы гарантированно вернуть всё в исходное состояние
+    def stop_current_speech(self):
+        """Делегируем остановку централизованному методу в SmartApp"""
+        print("[AI CAMERA] Запрос остановки в SmartApp...")
+        app = App.get_running_app()
+        if app and hasattr(app, 'stop_current_speech'):
+            app.stop_current_speech()
+        else:
+            # Запасной вариант, если вдруг app недоступен
             if hasattr(self, 'reset_assistant_state'):
                 self.reset_assistant_state()
 
-    def stop_current_speech(self):
-        """Псевдоним для полной совместимости"""
-        return self.stop_speech()
+    def stop_speech(self):
+        """Псевдоним для совместимости"""
+        return self.stop_current_speech()
 
     def on_ai_button_pressed(self, instance):
-        """Универсальный обработчик (аналог главного экрана)"""
+        """Универсальный обработчик кнопки для камеры"""
         if getattr(self, 'is_speaking_now', False) or getattr(self, 'is_processing', False):
             print("[AI CAMERA] Прерывание процесса по клику на кнопку отмены.")
-            # stop_speech уже вызывает reset_assistant_state внутри себя,
-            # поэтому здесь достаточно вызвать один метод без задвоения
             self.stop_current_speech()
         else:
             if hasattr(self, 'set_processing_state'):
@@ -4871,40 +4909,70 @@ class AICameraScreen(BaseScreen):
             print(f"[TTS MOCK]: {text}")
             return
 
-        cleaned_text = text
+        if not text or not str(text).strip():
+            return
+
+        cleaned_text = str(text)
         assistant = getattr(app, 'assistant', None) or getattr(app, 'voice_assistant', None)
 
+        # 1. Очистка текста через ассистента, если доступно
         if assistant and hasattr(assistant, 'clean_text_for_tts') and callable(assistant.clean_text_for_tts):
             try:
                 cleaned_text = assistant.clean_text_for_tts(text)
             except Exception as e:
                 print(f"[TTS CLEAN ERROR]: {e}")
 
-        # re уже импортирован в самом верху файла main2_2.py
+        # 2. Очистка от лишних символов (Markdown, звездочки, решетки)
         cleaned_text = re.sub(r'\*+', '', cleaned_text)
         cleaned_text = cleaned_text.replace('#', '')
         cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
 
-        spoken = False
-        for method_name in ['speak', 'speak_text', 'say']:
-            if assistant and hasattr(assistant, method_name) and callable(getattr(assistant, method_name)):
-                try:
-                    getattr(assistant, method_name)(cleaned_text)
-                    spoken = True
-                    break
-                except Exception:
-                    pass
+        if not cleaned_text:
+            return
 
-            if hasattr(app, method_name) and callable(getattr(app, method_name)):
+        # Устанавливаем флаги активности речи в приложении
+        app.is_speaking_now = True
+        app.is_processing = False
+
+        # Определяем callback для автоматического сброса интерфейса по окончании речи
+        def on_speech_finished():
+            print("[TTS] Озвучка завершена естественным образом.")
+            app.is_speaking_now = False
+            app.is_processing = False
+
+            # Безопасно сбрасываем интерфейс на текущем экране
+            def reset_ui(dt):
+                if hasattr(app, 'root') and app.root:
+                    current_screen = getattr(app.root, 'current_screen', None)
+                    if current_screen and hasattr(current_screen, 'reset_assistant_state'):
+                        current_screen.reset_assistant_state()
+
+            Clock.schedule_once(reset_ui, 0)
+
+        spoken = False
+
+        # 3. Пытаемся запустить озвучку, передавая callback
+        for method_name in ['speak', 'speak_text', 'say']:
+            target_obj = None
+            if assistant and hasattr(assistant, method_name) and callable(getattr(assistant, method_name)):
+                target_obj = assistant
+            elif hasattr(app, method_name) and callable(getattr(app, method_name)):
+                target_obj = app
+
+            if target_obj:
                 try:
-                    getattr(app, method_name)(cleaned_text)
+                    print(f"[TTS SAFE] Запуск через {method_name}: {cleaned_text[:35]}...")
+                    # Сразу передаем callback, так как ассистент его поддерживает
+                    getattr(target_obj, method_name)(cleaned_text, on_done_callback=on_speech_finished)
                     spoken = True
                     break
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[TTS Method {method_name} Error]: {e}")
 
         if not spoken:
             print(f"[TTS MOCK]: {cleaned_text}")
+            app.is_speaking_now = False
+            on_speech_finished()
 
 class SmartApp(App):
     def __init__(self, **kwargs):
@@ -5407,14 +5475,27 @@ class SmartApp(App):
         Clock.schedule_once(update_ui, 0)
 
     def stop_current_speech(self):
-        """Прямая остановка глобального движка без перенаправления на экраны"""
-        print("[SmartApp] Принудительная остановка речи...")
-        try:
-            if hasattr(self, 'tts_engine') and self.tts_engine:
-                self.tts_engine.stop()
-                self.tts_engine = None
-        except Exception as e:
-            print(f"[SmartApp] Ошибка остановки: {e}")
+        """Единая и чистая точка остановки (для класса SmartApp)"""
+        print("[SmartApp] Нажата кнопка 'Стоп'")
+
+        # 1. Находим ассистента и вызываем его метод stop()
+        assistant = getattr(self, 'assistant', None) or getattr(self, 'voice_assistant', None)
+        if assistant and hasattr(assistant, 'stop'):
+            assistant.stop()
+
+        # 2. Сбрасываем глобальные флаги приложения
+        self.is_processing = False
+        self.is_speaking_now = False
+
+        # 3. Принудительно сбрасываем интерфейс на текущем активном экране (например, в камере)
+        if hasattr(self, 'root') and self.root:
+            current_screen = getattr(self.root, 'current_screen', None)
+            if current_screen and hasattr(current_screen, 'reset_assistant_state'):
+                current_screen.reset_assistant_state()
+                current_screen.is_processing = False
+                current_screen.is_speaking_now = False
+
+        print("[SmartApp] Озвучка и интерфейс успешно сброшены.")
 
     def turn_all_on(self):
         for lamp in self.lamp_objects:
