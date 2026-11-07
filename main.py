@@ -63,7 +63,7 @@ except ImportError:
     from kivy.uix.camera import Camera
 
     HAS_CAMERA4KIVY = False
-
+print(f"[AI CAMERA DEBUG] HAS_CAMERA4KIVY = {HAS_CAMERA4KIVY}")
 try:
     from PIL import Image as PilImage
 except ImportError:
