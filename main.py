@@ -1799,9 +1799,9 @@ class SystemSettingsPopup(Popup):
                 text_input_instance.background_color = orig_bg
                 text_input_instance.text = ""
 
-
         # Улучшенный обработчик создания блока с автопрокруткой и поддержкой LongPress
-        def create_setting_block(label_text, default_text="", input_filter=None, on_tap_callback=None):
+        def create_setting_block(label_text, default_text="", input_filter=None, on_tap_callback=None,
+                                 allow_clipboard=False):
             block = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
 
             lbl = Label(
@@ -1818,43 +1818,61 @@ class SystemSettingsPopup(Popup):
             lbl.bind(width=lambda inst, val: setattr(inst, 'text_size', (val, None)))
             block.add_widget(lbl)
 
-            # Создаем кастомный класс с поддержкой вставки из буфера по долгому нажатию
-            class ClipboardTapTextInput(LongPressTextInput):
-                def on_touch_down(self, touch):
-                    if self.collide_point(*touch.pos):
-                        if on_tap_callback:
+            if on_tap_callback:
+                class TapTextInput(LongPressTextInput):
+                    def on_touch_down(self, touch):
+                        if self.collide_point(*touch.pos):
                             on_tap_callback(self)
-                        return True
-                    return super().on_touch_down(touch)
+                            return True
+                        return super().on_touch_down(touch)
 
-                # Перехватываем долгое нажатие (имя метода зависит от реализации вашего LongPressTextInput,
-                # обычно это on_long_press или аналогичный калбэк)
-                def on_long_press(self, *args):
-                    try:
-                        # Читаем текст из системного буфера обмена
-                        pasted_text = Clipboard.get('text')
-                        if pasted_text:
-                            self.text = pasted_text.strip()
-                            print(f"[CLIPBOARD] Вставлено из буфера: {self.text}")
-                    except Exception as e:
-                        print(f"[CLIPBOARD ERROR]: {e}")
+                input_widget = TapTextInput(
+                    text=str(default_text),
+                    multiline=False,
+                    size_hint_y=None,
+                    height=dp(40),
+                    font_size='13sp',
+                    readonly=True,
+                    background_color=(0.15, 0.17, 0.22, 1),
+                    foreground_color=(1, 1, 1, 1),
+                    halign='center',
+                    padding=[dp(8), dp(10), dp(8), dp(8)]
+                )
+            else:
+                # Класс для обычных полей или поля с возможностью вставки из буфера
+                class SmartTextInput(LongPressTextInput):
+                    def __init__(self, **kwargs):
+                        super().__init__(**kwargs)
+                        self._long_press_triggered = False
 
-                    # Вызываем родительский метод, если он есть
-                    if hasattr(super(), 'on_long_press'):
-                        super().on_long_press(*args)
+                    # Перехватываем долгое нажатие, если разрешен буфер обмена
+                    def on_long_press(self, *args):
+                        if allow_clipboard:
+                            try:
+                                pasted_text = Clipboard.get('text')
+                                if pasted_text:
+                                    self.text = pasted_text.strip()
+                                    print(f"[CLIPBOARD] Ключ успешно вставлен из буфера обмена.")
+                            except Exception as e:
+                                print(f"[CLIPBOARD ERROR]: {e}")
 
-            input_widget = ClipboardTapTextInput(
-                text=str(default_text),
-                multiline=False,
-                size_hint_y=None,
-                height=dp(40),
-                font_size='13sp',
-                readonly=False,  # Обязательно False, чтобы поле могло принимать текст
-                background_color=(0.15, 0.17, 0.22, 1),
-                foreground_color=(1, 1, 1, 1),
-                halign='center',
-                padding=[dp(8), dp(10), dp(8), dp(8)]
-            )
+                        if hasattr(super(), 'on_long_press'):
+                            super().on_long_press(*args)
+
+                input_widget = SmartTextInput(
+                    text=str(default_text),
+                    multiline=False,
+                    size_hint_y=None,
+                    height=dp(40),
+                    font_size='13sp',
+                    input_filter=input_filter,
+                    # Если разрешен буфер, поле должно быть доступно для изменения
+                    readonly=False if allow_clipboard else False,
+                    background_color=(0.15, 0.17, 0.22, 1),
+                    foreground_color=(1, 1, 1, 1),
+                    halign='center',
+                    padding=[dp(8), dp(10), dp(8), dp(8)]
+                )
 
             # Автопрокрутка ScrollView к фокусному полю ввода, когда появляется клавиатура
             def _on_focus(instance, value):
@@ -4542,12 +4560,26 @@ class AICameraScreen(BaseScreen):
         # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy (с фоллбеком на старый Camera), на ПК — Image + OpenCV
         if platform == 'android':
             if HAS_CAMERA4KIVY:
-                # Попробуйте задать rotation=90 или rotation=270, если камера вбок
                 self.img_feed = Preview(
                     size_hint=(1, 1),
-                    aspect_ratio='fill',
-                    rotation=90  # Возможные варианты для исправления поворота: 90, 270 или 0
+                    aspect_ratio='fill'
                 )
+
+                # 100% гарантированный поворот холста камеры на телефоне, если она вбок.
+                # Если после сборки картинка окажется вверх ногами или повернется не в ту сторону,
+                # просто измените angle=90 на angle=-90 или angle=180.
+                with self.img_feed.canvas.after:
+                    from kivy.graphics import PushMatrix, PopMatrix, Rotate
+                    PushMatrix()
+                    self.cam_rot = Rotate(angle=90, origin=self.img_feed.center)
+                with self.img_feed.canvas.after:
+                    PopMatrix()
+
+                def update_cam_rot(instance, *args):
+                    self.cam_rot.origin = instance.center
+
+                self.img_feed.bind(pos=update_cam_rot, size=update_cam_rot)
+
             else:
                 self.img_feed = Camera(
                     play=False,
@@ -4749,11 +4781,9 @@ class AICameraScreen(BaseScreen):
     def on_enter(self):
         if platform == 'android':
             if HAS_CAMERA4KIVY:
-                # Явно передаем ориентацию portrait при подключении камеры
                 Clock.schedule_once(
                     lambda dt: self.img_feed.connect_camera(
-                        camera_id='back',
-                        orientation='portrait'
+                        camera_id='back'
                     ),
                     0.5
                 )
