@@ -45,8 +45,8 @@ version = 1.0.0
 #requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, httpx, websockets, pillow
 #requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, httpx, httpcore, h11, websockets, pillow
 #requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, pillow, websockets, httpx, httpcore, h11, anyio
-#requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, pillow, websockets
-requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, pillow, websockets, camera4kivy
+requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, pillow, websockets
+#requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, pillow, websockets, camera4kivy
 # (str) Ориентация экрана
 orientation = portrait
 
