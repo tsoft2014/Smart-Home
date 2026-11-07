@@ -51,9 +51,8 @@ from kivy.uix.camera import Camera  # Импортируем нативный в
 from kivy.core.window import Window  # Не забудьте убедиться, что Window импортирован в файле
 from kivy.graphics import Color, Rectangle
 from kivy.core.image import Texture
-from kivy.graphics import Color, RoundedRectangle, Rectangle
-
-
+from kivy.graphics import Color, RoundedRectangle, Rectangle, Ellipse, Triangle
+from kivy.core.clipboard import Clipboard  # <--- Убедитесь, что Clipboard импортирован в начале файла
 
 # Пытаемся импортировать Camera4Kivy Preview, чтобы избавиться от багов стандартной камеры
 try:
@@ -592,6 +591,76 @@ class VoiceAssistant:
 
         self.is_speaking = False
 
+    def normalize_numbers_to_words(self, text):
+        if not text:
+            return ""
+        import re
+
+        ones = {
+            '0': 'ноль', '1': 'один', '2': 'два', '3': 'три', '4': 'четыре',
+            '5': 'пять', '6': 'шесть', '7': 'семь', '8': 'восемь', '9': 'девять',
+            '10': 'десять', '11': 'одиннадцать', '12': 'двенадцать', '13': 'тринадцать',
+            '14': 'четырнадцать', '15': 'пятнадцать', '16': 'шестнадцать',
+            '17': 'семнадцать', '18': 'восемнадцать', '19': 'девятнадцать'
+        }
+
+        tens = {
+            '2': 'двадцать', '3': 'тридцать', '4': 'сорок', '5': 'пятьдесят',
+            '6': 'шестьдесят', '7': 'семьдесят', '8': 'восемьдесят', '9': 'девяносто'
+        }
+
+        def convert(match):
+            num_str = match.group(0)
+            if num_str in ones:
+                return ones[num_str]
+            if len(num_str) == 2:
+                t = tens.get(num_str[0], '')
+                o = ones.get(num_str[1], '') if num_str[1] != '0' else ''
+                return f"{t} {o}".strip()
+            return num_str
+
+        return re.sub(r'\b\d+\b', convert, text)
+
+    def clean_text_for_tts(self, text):
+        if not text:
+            return ""
+        # Универсальная замена точек между цифрами (например, 3.5 -> 3 и 5, 36.5 -> 36 и 5)
+        text = re.sub(r'(\d+)\.(\d+)', r'\1 и \2', text)
+
+        # 1. Очищаем LaTeX и математические символы формулы
+        text = text.replace(r'\times', ' умножить на ')
+        text = text.replace(r'{,}', ',')
+        text = re.sub(r'\\text\{([^}]+)\}', r'\1', text)
+        text = re.sub(r'\\mathbf\{([^}]+)\}', r'\1', text)
+        text = re.sub(r'[$*_\\{}]', '', text)  # Убираем оставшиеся теги
+
+        # 2. Заменяем знаки операций на слова
+        text = text.replace('×', ' умножить на ')
+        text = text.replace('=', ' равно ')
+
+        # 3. Очистка стандартного Markdown
+        text = re.sub(r'#+\s*', '', text)
+        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+        text = re.sub(r'`{1,3}', '', text)
+
+        # 4. Обработка знаков препинания и спецсимволов для TTS
+        # Тире заменяем на запятую/паузу, чтобы голос не читал его как слово
+        text = re.sub(r'\s*—\s*', ', ', text)
+        # Убираем кавычки, скобки и технические символы, оставляя базовую пунктуацию для пауз
+        text = re.sub(r'[«»„“"\'\[\]()<>|~^]', ' ', text)
+
+        # 5. Нормализация сокращений единиц измерения для озвучки
+        text = re.sub(r'\bмл\b', 'миллилитров', text, flags=re.IGNORECASE)
+        text = re.sub(r'\bг\b', 'грамм', text, flags=re.IGNORECASE)
+
+        # 6. Конвертируем числа в слова
+        text = self.normalize_numbers_to_words(text)
+
+        # 7. Убираем образовавшиеся двойные пробелы
+        text = re.sub(r'\s+', ' ', text)
+
+        return text.strip()
+
     def speak(self, text, on_done_callback=None):
         if not text or not str(text).strip():
             if on_done_callback:
@@ -599,11 +668,11 @@ class VoiceAssistant:
             return
 
         if self.is_speaking:
-            # Если уже говорит, принудительно сбрасываем предыдущую речь перед новой
             self.stop()
 
-        text = str(text).strip()
-        self.last_spoken_text = text.lower()
+        # Очищаем текст прямо внутри ассистента!
+        clean_text = self.clean_text_for_tts(str(text))
+        self.last_spoken_text = clean_text.lower()
 
         def _say_thread(cb=on_done_callback):
             self.is_speaking = True
@@ -616,7 +685,18 @@ class VoiceAssistant:
                         if _android_tts is not None:
                             HashMap = autoclass("java.util.HashMap")
                             params = HashMap()
-                            _android_tts.speak(text, 0, params)
+                            _android_tts.speak(clean_text, 0, params)
+
+                            import time
+                            words = clean_text.split()
+                            for _ in range(len(words) * 2):
+                                if not self.is_speaking:
+                                    try:
+                                        _android_tts.stop()
+                                    except Exception:
+                                        pass
+                                    break
+                                time.sleep(0.3)
                     except Exception as e:
                         print(f"[ANDROID TTS ERROR]: {e}")
                 else:
@@ -629,19 +709,25 @@ class VoiceAssistant:
 
                     import pyttsx3
                     engine = pyttsx3.init()
-
-                    # Сохраняем ссылку на движок в класс, чтобы метод stop() мог его прибить
                     self.current_engine = engine
-
                     engine.setProperty("rate", 170)
-                    engine.say(text)
-                    engine.runAndWait()
+
+                    # Разбиваем очищенный текст на предложения для мгновенной отмены
+                    import re
+                    sentences = re.split(r'(?<=[.!?])\s+', clean_text)
+
+                    for sentence in sentences:
+                        if not self.is_speaking:
+                            print("[TTS] Озвучка прервана.")
+                            break
+                        if sentence.strip():
+                            engine.say(sentence)
+                            engine.runAndWait()
 
             except Exception as e:
                 print(f"[PC TTS ERROR]: {e}")
 
             finally:
-                # Очищаем движок по завершении речи
                 if engine:
                     try:
                         engine.stop()
@@ -664,6 +750,17 @@ class VoiceAssistant:
                     cb()
 
         threading.Thread(target=_say_thread, daemon=True).start()
+
+    def stop(self):
+        print("[Assistant] Принудительная остановка...")
+        self.is_speaking = False
+        if hasattr(self, 'current_engine') and self.current_engine:
+            try:
+                self.current_engine.stop()
+                self.current_engine.endLoop()
+            except Exception:
+                pass
+            self.current_engine = None
 
     def set_voice_input_target(self, callback_func):
         self.voice_input_target = callback_func
@@ -1702,6 +1799,7 @@ class SystemSettingsPopup(Popup):
                 text_input_instance.background_color = orig_bg
                 text_input_instance.text = ""
 
+
         # Улучшенный обработчик создания блока с автопрокруткой и поддержкой LongPress
         def create_setting_block(label_text, default_text="", input_filter=None, on_tap_callback=None):
             block = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
@@ -1720,39 +1818,43 @@ class SystemSettingsPopup(Popup):
             lbl.bind(width=lambda inst, val: setattr(inst, 'text_size', (val, None)))
             block.add_widget(lbl)
 
-            if on_tap_callback:
-                class TapTextInput(LongPressTextInput):
-                    def on_touch_down(self, touch):
-                        if self.collide_point(*touch.pos):
+            # Создаем кастомный класс с поддержкой вставки из буфера по долгому нажатию
+            class ClipboardTapTextInput(LongPressTextInput):
+                def on_touch_down(self, touch):
+                    if self.collide_point(*touch.pos):
+                        if on_tap_callback:
                             on_tap_callback(self)
-                            return True
-                        return super().on_touch_down(touch)
+                        return True
+                    return super().on_touch_down(touch)
 
-                input_widget = TapTextInput(
-                    text=str(default_text),
-                    multiline=False,
-                    size_hint_y=None,
-                    height=dp(40),
-                    font_size='13sp',
-                    readonly=True,
-                    background_color=(0.15, 0.17, 0.22, 1),
-                    foreground_color=(1, 1, 1, 1),
-                    halign='center',
-                    padding=[dp(8), dp(10), dp(8), dp(8)]
-                )
-            else:
-                input_widget = LongPressTextInput(
-                    text=str(default_text),
-                    multiline=False,
-                    size_hint_y=None,
-                    height=dp(40),
-                    font_size='13sp',
-                    input_filter=input_filter,
-                    background_color=(0.15, 0.17, 0.22, 1),
-                    foreground_color=(1, 1, 1, 1),
-                    halign='center',
-                    padding=[dp(8), dp(10), dp(8), dp(8)]
-                )
+                # Перехватываем долгое нажатие (имя метода зависит от реализации вашего LongPressTextInput,
+                # обычно это on_long_press или аналогичный калбэк)
+                def on_long_press(self, *args):
+                    try:
+                        # Читаем текст из системного буфера обмена
+                        pasted_text = Clipboard.get('text')
+                        if pasted_text:
+                            self.text = pasted_text.strip()
+                            print(f"[CLIPBOARD] Вставлено из буфера: {self.text}")
+                    except Exception as e:
+                        print(f"[CLIPBOARD ERROR]: {e}")
+
+                    # Вызываем родительский метод, если он есть
+                    if hasattr(super(), 'on_long_press'):
+                        super().on_long_press(*args)
+
+            input_widget = ClipboardTapTextInput(
+                text=str(default_text),
+                multiline=False,
+                size_hint_y=None,
+                height=dp(40),
+                font_size='13sp',
+                readonly=False,  # Обязательно False, чтобы поле могло принимать текст
+                background_color=(0.15, 0.17, 0.22, 1),
+                foreground_color=(1, 1, 1, 1),
+                halign='center',
+                padding=[dp(8), dp(10), dp(8), dp(8)]
+            )
 
             # Автопрокрутка ScrollView к фокусному полю ввода, когда появляется клавиатура
             def _on_focus(instance, value):
@@ -2960,31 +3062,27 @@ class MainHubScreen(BaseScreen):
             self.resume_sensor_polling()
 
     def stop_current_speech(self):
-        """Принудительная остановка озвучки и сброс интерфейса"""
-        print("[UI] Принудительная остановка озвучки...")
-        try:
-            app = App.get_running_app()
+        """Останавливаем звук через SmartApp/ассистента и принудительно стираем текст"""
+        print("[AI Screen] Запрос остановки процесса...")
 
-            # 1. Находим ассистента и вызываем его метод stop() (там где крутится pyttsx3 / android tts)
-            assistant = getattr(app, 'assistant', None) or getattr(app, 'voice_assistant', None) if app else None
+        app = App.get_running_app()
+        if app:
+            # 1. Принудительно глушим централизованного ассистента
+            assistant = getattr(app, 'assistant', None) or getattr(app, 'voice_assistant', None)
             if assistant and hasattr(assistant, 'stop'):
                 assistant.stop()
-                print("[UI] Команда stop() успешно отправлена ассистенту.")
 
-            # 2. Страховка: если у экрана есть свой локальный tts_engine
-            if hasattr(self, 'tts_engine') and self.tts_engine:
-                try:
-                    self.tts_engine.stop()
-                    self.tts_engine.endLoop()
-                except Exception:
-                    pass
-                self.tts_engine = None
+            # 2. Вызываем глобальный метод приложения, если он есть
+            if hasattr(app, 'stop_current_speech') and app.stop_current_speech != self.stop_current_speech:
+                app.stop_current_speech()
 
-        except Exception as e:
-            print(f"[UI] Ошибка при остановке речи: {e}")
-        finally:
-            # Сбрасываем состояние и очищаем поле ввода, так как пользователь нажал отмену
+        # 3. Принудительно сбрасываем состояние экрана И СТИРАЕМ ТЕКСТ (clear_input=True)
+        if hasattr(self, 'reset_assistant_state'):
             self.reset_assistant_state(clear_input=True)
+
+    def stop_speech(self):
+        """Псевдоним для совместимости"""
+        return self.stop_current_speech()
 
     def terminate_live_session(self, instance):
         """Штатный и безопасный сброс Live-сессии с полным возвратом в Vosk"""
@@ -3335,11 +3433,15 @@ class MainHubScreen(BaseScreen):
     def apply_response_on_main_thread(self, ai_answer):
         self.update_assistant_status("Ответ получен", color=(0.2, 0.85, 0.3, 1))
 
-        # 1. Запускаем озвучку ответа.
-        # Больше здесь ничего не сбрасываем — сбросом управляет сама озвучка по окончании!
+        # 1. Запускаем озвучку ответа через централизованного ассистента приложения.
+        # Вся очистка текста, блокировка микрофона и сброс состояния после речи
+        # теперь управляются самим ассистентом (VoiceAssistant)!
         try:
-            if hasattr(self, 'assistant') and self.assistant:
-                self.assistant.speak(ai_answer)
+            app = App.get_running_app()
+            assistant_obj = getattr(app, 'assistant', None) or getattr(self, 'assistant', None)
+
+            if assistant_obj:
+                assistant_obj.speak(ai_answer)
             elif hasattr(self, 'speak_answer'):
                 self.speak_answer(ai_answer)
         except Exception as e:
@@ -3347,139 +3449,10 @@ class MainHubScreen(BaseScreen):
             # Если вдруг произошла ошибка, сразу возвращаем кнопку в норму, чтобы она не зависла
             if hasattr(self, 'set_normal_state'):
                 self.set_normal_state()
+            elif hasattr(self, 'reset_assistant_state'):
+                self.reset_assistant_state()
 
         print("[ESP] Ответ от сервера получен, работа приложения штатно продолжается.")
-
-    def normalize_numbers_to_words(self, text):
-        if not text:
-            return ""
-        import re
-
-        ones = {
-            '0': 'ноль', '1': 'один', '2': 'два', '3': 'три', '4': 'четыре',
-            '5': 'пять', '6': 'шесть', '7': 'семь', '8': 'восемь', '9': 'девять',
-            '10': 'десять', '11': 'одиннадцать', '12': 'двенадцать', '13': 'тринадцать',
-            '14': 'четырнадцать', '15': 'пятнадцать', '16': 'шестнадцать',
-            '17': 'семнадцать', '18': 'восемнадцать', '19': 'девятнадцать'
-        }
-
-        tens = {
-            '2': 'двадцать', '3': 'тридцать', '4': 'сорок', '5': 'пятьдесят',
-            '6': 'шестьдесят', '7': 'семьдесят', '8': 'восемьдесят', '9': 'девяносто'
-        }
-
-        def convert(match):
-            num_str = match.group(0)
-            if num_str in ones:
-                return ones[num_str]
-            if len(num_str) == 2:
-                t = tens.get(num_str[0], '')
-                o = ones.get(num_str[1], '') if num_str[1] != '0' else ''
-                return f"{t} {o}".strip()
-            return num_str
-
-        return re.sub(r'\b\d+\b', convert, text)
-
-    def clean_text_for_tts(self, text):
-        if not text:
-            return ""
-        # Универсальная замена точек между цифрами (например, 3.5 -> 3 и 5, 36.5 -> 36 и 5)
-        text = re.sub(r'(\d+)\.(\d+)', r'\1 и \2', text)
-
-        # 1. Очищаем LaTeX и математические символы формулы
-        text = text.replace(r'\times', ' умножить на ')
-        text = text.replace(r'{,}', ',')
-        text = re.sub(r'\\text\{([^}]+)\}', r'\1', text)
-        text = re.sub(r'\\mathbf\{([^}]+)\}', r'\1', text)
-        text = re.sub(r'[$*_\\{}]', '', text)  # Убираем оставшиеся теги
-
-        # 2. Заменяем знаки операций на слова
-        text = text.replace('×', ' умножить на ')
-        text = text.replace('=', ' равно ')
-
-        # 3. Очистка стандартного Markdown
-        text = re.sub(r'#+\s*', '', text)
-        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-        text = re.sub(r'`{1,3}', '', text)
-
-        # 4. Обработка знаков препинания и спецсимволов для TTS
-        # Тире заменяем на запятую/паузу, чтобы голос не читал его как слово
-        text = re.sub(r'\s*—\s*', ', ', text)
-        # Убираем кавычки, скобки и технические символы, оставляя базовую пунктуацию для пауз
-        text = re.sub(r'[«»„“"\'\[\]()<>|~^]', ' ', text)
-
-        # 5. Нормализация сокращений единиц измерения для озвучки
-        text = re.sub(r'\bмл\b', 'миллилитров', text, flags=re.IGNORECASE)
-        text = re.sub(r'\bг\b', 'грамм', text, flags=re.IGNORECASE)
-
-        # 6. Конвертируем числа в слова
-        text = self.normalize_numbers_to_words(text)
-
-        # 7. Убираем образовавшиеся двойные пробелы
-        text = re.sub(r'\s+', ' ', text)
-
-        return text.strip()
-
-    def speak_answer(self, text):
-        """Озвучивает ответ ассистента и сбрасывает статус строго ПО ОКОНЧАНИИ речи"""
-        if not text:
-            return
-
-        clean_text = self.clean_text_for_tts(text)
-
-        # --- БЛОКИРУЕМ МИКРОФОН ОТ ЭХА ---
-        self.is_assistant_speaking = True
-        self.last_spoken_text = clean_text.strip().lower()
-        # ---------------------------------
-
-        self.set_cancel_state()  # Переводим в состояние отмены/озвучки
-
-        def _run_tts():
-            try:
-                print(f"[TTS] Озвучиваю: {clean_text}")
-                import pyttsx3
-                engine = pyttsx3.init()
-                self.tts_engine = engine
-                engine.say(clean_text)
-                engine.runAndWait()  # На ПК поток ждет здесь до полного окончания речи!
-            except ImportError:
-                # Для Android, где pyttsx3 нет
-                try:
-                    from plyer import tts
-                    tts.speak(clean_text)
-                    # Так как plyer не блокирует поток, на Android делаем паузу по длине текста
-                    import time
-                    word_count = len(clean_text.split())
-                    time.sleep(max(2.0, word_count * 0.4 + 1.0))
-                except Exception as e_plyer:
-                    print(f"[TTS ERROR] Plyer недоступен: {e_plyer}")
-            except Exception as e:
-                print(f"[TTS ERROR] Ошибка озвучки: {e}")
-            finally:
-                # Безопасно гасим движок
-                try:
-                    if hasattr(self, 'tts_engine') and self.tts_engine:
-                        self.tts_engine.stop()
-                        self.tts_engine.endLoop()
-                except Exception:
-                    pass
-
-                self.tts_engine = None
-
-                from kivy.clock import Clock, mainthread
-                # 1. Даем паузу перед разблокировкой микрофона
-                Clock.schedule_once(lambda dt: self._release_mic(), 0.8)
-
-                # 2. ВСЁ ЗАКОНЧИЛОСЬ: возвращаем кнопку в режим 'AI' из главного потока
-                @mainthread
-                def finish_speech(dt):
-                    if hasattr(self, 'set_normal_state'):
-                        self.set_normal_state()
-
-                Clock.schedule_once(finish_speech, 0.1)
-
-        import threading
-        threading.Thread(target=_run_tts, daemon=True).start()
 
     def _release_mic(self, dt=None):
         # код освобождения микрофона...
@@ -4569,9 +4542,11 @@ class AICameraScreen(BaseScreen):
         # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy (с фоллбеком на старый Camera), на ПК — Image + OpenCV
         if platform == 'android':
             if HAS_CAMERA4KIVY:
+                # Попробуйте задать rotation=90 или rotation=270, если камера вбок
                 self.img_feed = Preview(
                     size_hint=(1, 1),
-                    aspect_ratio='fill'  # Растягиваем на весь экран под портрет
+                    aspect_ratio='fill',
+                    rotation=90  # Возможные варианты для исправления поворота: 90, 270 или 0
                 )
             else:
                 self.img_feed = Camera(
@@ -4664,43 +4639,94 @@ class AICameraScreen(BaseScreen):
             pos=lambda inst, val: setattr(self.bottom_rect, 'pos', val)
         )
 
-        bottom_bar = FloatLayout(size_hint=(1, 1))
+        # Используем горизонтальный BoxLayout вместо FloatLayout
+        bottom_bar = BoxLayout(
+            orientation='horizontal',
+            size_hint=(1, 1),
+            padding=[dp(25), 0, dp(25), 0]  # Отступы слева и справа от краев экрана
+        )
 
-        # Кнопка слева: ПОВТОР
+        # --- Кнопка слева: ПОВТОР (с иконкой Play) ---
         self.btn_repeat = Button(
-            text="R",
-            font_size='20sp',
+            text="",
             size_hint=(None, None),
             size=(dp(55), dp(55)),
-            pos_hint={'x': 0.1, 'center_y': 0.5},
-            background_normal='',
-            background_color=(0, 0, 0, 0.4),
-            color=(1, 1, 1, 1)
+            pos_hint={'center_y': 0.5},
+            background_normal="",
+            background_color=(0, 0, 0, 0),
+            color=(1, 1, 1, 1),
         )
+
+        with self.btn_repeat.canvas.before:
+            Color(0, 0, 0, 0.4)
+            self.repeat_bg = Ellipse(pos=self.btn_repeat.pos, size=self.btn_repeat.size)
+
+        with self.btn_repeat.canvas:
+            Color(1, 1, 1, 1)
+            self.repeat_triangle = Triangle(points=[0, 0, 0, 0, 0, 0])
+
+        def update_repeat_graphics(instance, *args):
+            self.repeat_bg.pos = instance.pos
+            self.repeat_bg.size = instance.size
+            self.repeat_triangle.points = [
+                instance.x + instance.width * 0.38,
+                instance.y + instance.height * 0.28,
+                instance.x + instance.width * 0.38,
+                instance.y + instance.height * 0.72,
+                instance.x + instance.width * 0.72,
+                instance.y + instance.height * 0.50,
+            ]
+
+        self.btn_repeat.bind(pos=update_repeat_graphics, size=update_repeat_graphics)
         self.btn_repeat.bind(on_press=lambda x: self.repeat_last_response())
         bottom_bar.add_widget(self.btn_repeat)
 
-        # Кнопка по центру: СНИМОК
+        # 1-й Распорщик (занимает всё свободное пространство между левой и центральной кнопкой)
+        bottom_bar.add_widget(Widget(size_hint_x=1))
+
+        # --- Кнопка по центру: СНИМОК ---
         self.btn_capture = RoundCaptureButton(
             size_hint=(None, None),
             size=(dp(70), dp(70)),
-            pos_hint={'center_x': 0.5, 'center_y': 0.5}
+            pos_hint={'center_y': 0.5}
         )
         self.btn_capture.bind(on_press=lambda x: self.capture_and_process_ai())
         bottom_bar.add_widget(self.btn_capture)
 
-        # Кнопка справа: ОТМЕНА ОЗВУЧКИ
+        # 2-й Распорщик (занимает всё пространство между центральной и правой кнопкой)
+        bottom_bar.add_widget(Widget(size_hint_x=1))
+
+        # --- Кнопка справа: ОТМЕНА ОЗВУЧКИ (с иконкой Стоп) ---
         self.btn_stop_speech = Button(
-            text="X",
-            font_size='20sp',
-            bold=True,
+            text="",
             size_hint=(None, None),
             size=(dp(55), dp(55)),
-            pos_hint={'right': 0.9, 'center_y': 0.5},
-            background_normal='',
-            background_color=(0, 0, 0, 0.4),
-            color=(1, 1, 1, 1)
+            pos_hint={'center_y': 0.5},
+            background_normal="",
+            background_color=(0, 0, 0, 0),
+            color=(1, 1, 1, 1),
         )
+
+        with self.btn_stop_speech.canvas.before:
+            Color(0, 0, 0, 0.4)
+            self.stop_bg = Ellipse(pos=self.btn_stop_speech.pos, size=self.btn_stop_speech.size)
+
+        with self.btn_stop_speech.canvas:
+            Color(1, 1, 1, 1)
+            self.stop_square = Rectangle(pos=(0, 0), size=(0, 0))
+
+        def update_stop_graphics(instance, *args):
+            self.stop_bg.pos = instance.pos
+            self.stop_bg.size = instance.size
+
+            sq_size = instance.width * 0.4
+            sq_x = instance.center_x - sq_size / 2
+            sq_y = instance.center_y - sq_size / 2
+
+            self.stop_square.pos = (sq_x, sq_y)
+            self.stop_square.size = (sq_size, sq_size)
+
+        self.btn_stop_speech.bind(pos=update_stop_graphics, size=update_stop_graphics)
         self.btn_stop_speech.bind(on_press=lambda x: self.stop_speech())
         bottom_bar.add_widget(self.btn_stop_speech)
 
@@ -4728,7 +4754,7 @@ class AICameraScreen(BaseScreen):
                     lambda dt: self.img_feed.connect_camera(
                         camera_id='back',
                         orientation='portrait'
-                    ), 
+                    ),
                     0.5
                 )
             else:
