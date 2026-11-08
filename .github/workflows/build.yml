@@ -45,6 +45,7 @@ jobs:
             git \
             zip \
             unzip \
+            wget \
             openjdk-17-jdk \
             python3-pip \
             autotools-dev \
@@ -67,11 +68,14 @@ jobs:
         run: |
           mkdir -p local_recipes/camera4kivy
           
-          # Клонируем исходный код через стабильный git-протокол
-          git clone --depth 1 https://github.com/mitch-cult/camera4kivy.git camera4kivy_src
+          # Скачиваем архив напрямую через wget без запроса учетных данных git
+          wget https://github.com/mitch-cult/camera4kivy/archive/refs/heads/master.zip -O camera4kivy.zip
+          
+          # Распаковываем архив
+          unzip -q camera4kivy.zip
           
           # Копируем содержимое в папку локального рецепта p4a
-          cp -r camera4kivy_src/* local_recipes/camera4kivy/
+          cp -r camera4kivy-master/* local_recipes/camera4kivy/
           
           # Создаем рецепт p4a с url = None для сборки из локальных файлов
           cat << 'EOF' > local_recipes/camera4kivy/__init__.py
