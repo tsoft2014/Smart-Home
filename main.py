@@ -58,6 +58,7 @@ from kivy.core.clipboard import Clipboard  # <--- Убедитесь, что Cli
 try:
     from camera4kivy import Preview
     HAS_CAMERA4KIVY = True
+    print("[CAMERA] Camera4Kivy успешно загружена")
 except ImportError:
     HAS_CAMERA4KIVY = False
     print("[WARN] camera4kivy not found. Camera will not work on Android.")
