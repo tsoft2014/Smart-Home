@@ -41,8 +41,12 @@ version = 1.0.0
 requirements = python3, kivy, requests, urllib3, chardet, idna, certifi, plyer, pyjnius, cffi, hostpython3, srt, tqdm, charset-normalizer, vosk, opencv, numpy, pillow, websockets, camera4kivy, gestures4kivy
 #requirements = python3,kivy,requests,urllib3,chardet,idna,certifi,plyer,pyjnius,cffi,srt,tqdm,charset-normalizer,vosk,opencv,numpy,pillow,websockets,camera4kivy,gestures4kivy
 
+# (str) Custom p4a hook to use
+p4a.hook = camerax_provider/gradle_options.py
+
 # (str) Ориентация экрана
 orientation = portrait
+
 
 # (bool) Показывать статус-бар телефона (0 - показывать)
 fullscreen = 0
