@@ -68,12 +68,11 @@ jobs:
         run: |
           mkdir -p local_recipes/camera4kivy
           
-          # Клонируем с автоматическими попытками при 503/504 ошибках сети
-          for i in {1..5}; do
-            git clone --depth 1 https://github.com/mitch-cult/camera4kivy.git camera4kivy_src && break
-            echo "Попытка клонирования не удалась, пробуем снова через 5 секунд..."
-            sleep 5
-          done
+          # Отключаем запросы ввода логина/пароля для git в неинтерактивном окружении
+          git config --global credential.helper ""
+          
+          # Клонируем репозиторий без запроса учетных данных
+          git clone --depth 1 https://github.com/mitch-cult/camera4kivy.git camera4kivy_src
           
           # Копируем содержимое в папку локального рецепта p4a
           cp -r camera4kivy_src/* local_recipes/camera4kivy/
