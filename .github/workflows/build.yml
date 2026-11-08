@@ -68,6 +68,13 @@ jobs:
           rm -rf .buildozer
           rm -rf ~/.buildozer
 
+      - name: Download CameraX provider
+        run: |
+          git clone https://github.com/Android-for-Python/camerax_provider.git
+          rm -rf camerax_provider/.git
+          test -f camerax_provider/gradle_options.py
+          test -f camerax_provider/camerax_src/org/kivy/camerax/CameraX.java
+
       - name: Build APK with Buildozer
         run: |
           yes | buildozer android debug
