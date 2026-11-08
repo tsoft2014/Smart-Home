@@ -4561,37 +4561,6 @@ class AICameraSettingsPopup(Popup):
         self.dismiss()
 
 
-
-
-# Проверки наличия модулей
-try:
-    from camera4kivy import Preview
-    HAS_CAMERA4KIVY = True
-except ImportError:
-    HAS_CAMERA4KIVY = False
-    print("[WARN] camera4kivy not found. Camera will not work on Android.")
-
-try:
-    from kivy.uix.camera import Camera
-    HAS_KIVY_CAMERA = True
-except ImportError:
-    HAS_KIVY_CAMERA = False
-    print("[WARN] kivy.uix.camera not found. Fallback camera will not work on Android.")
-
-try:
-    import cv2
-    HAS_OPENCV = True
-except ImportError:
-    HAS_OPENCV = False
-    print("[WARN] opencv-python not found. Camera on PC will not work.")
-
-try:
-    from PIL import Image as PilImage
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
-    print("[WARN] Pillow not found. Image saving/processing might fail.")
-
 class AICameraScreen(BaseScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -4605,23 +4574,11 @@ class AICameraScreen(BaseScreen):
         if platform == 'android':
             if HAS_CAMERA4KIVY:
                 print("[AI CAMERA] Используем современный Preview от camera4kivy")
-                self.img_feed = Preview(size_hint=(1, 1), aspect_ratio='fill')
-
-                # 100% гарантированный поворот холста камеры на телефоне, если она вбок.
-                # Если после сборки картинка окажется вверх ногами или повернется не в ту сторону,
-                # просто измените angle=90 на angle=-90 или angle=180.
-                with self.img_feed.canvas.after:
-                    from kivy.graphics import PushMatrix, PopMatrix, Rotate
-                    PushMatrix()
-                    self.cam_rot = Rotate(angle=90, origin=self.img_feed.center)
-                with self.img_feed.canvas.after:
-                    PopMatrix()
-
-                def update_cam_rot(instance, *args):
-                    self.cam_rot.origin = instance.center
-
-                self.img_feed.bind(pos=update_cam_rot, size=update_cam_rot)
-
+                self.img_feed = Preview(
+                    size_hint=(1, 1),
+                    aspect_ratio='fill',
+                    rotation=270  # Аппаратный поворот кадра
+                )
             elif HAS_KIVY_CAMERA:
                 print("[AI CAMERA] camera4kivy не найден, используем стандартный kivy.uix.camera.Camera")
                 self.img_feed = Camera(
