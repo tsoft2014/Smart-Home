@@ -38,7 +38,6 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          # Полностью удаляем проблемный пакет command-not-found, чтобы он не вызывал exit code 100
           sudo apt-get remove -y command-not-found || true
           
           sudo apt-get update
@@ -64,25 +63,30 @@ jobs:
           python3 -m pip install --upgrade pip setuptools
           pip install "buildozer==1.5.0" "cython==0.29.36"
 
-      - name: Prepare Local camera4kivy Recipe
+      - name: Prepare Local camera4kivy Source
         run: |
           mkdir -p local_recipes/camera4kivy
           
-          # Скачиваем архив с надежным повтором при сбое 504
+          # Скачиваем архив с повторами при сетевых сбоях
           for i in {1..5}; do
-            curl -L https://github.com/mitch-cult/camera4kivy/archive/master.zip -o camera4kivy_master.zip && break
-            echo "Попытка скачивания не удалась, повторяем через 5 секунд..."
+            curl -L https://github.com/mitch-cult/camera4kivy/archive/master.zip -o camera4kivy.zip && break
+            echo "Попытка скачивания не удалась, повторяем..."
             sleep 5
           done
           
-          # Создаем локальный рецепт p4a, который берет архив с локального диска
+          # Распаковываем архив
+          unzip -q camera4kivy.zip
+          
+          # Копируем содержимое распакованного пакета прямо в папку локального рецепта
+          cp -r camera4kivy-master/* local_recipes/camera4kivy/
+          
+          # Создаем рецепт p4a с url = None (сборка из файлов в папке рецепта)
           cat << 'EOF' > local_recipes/camera4kivy/__init__.py
           from pythonforandroid.recipe import PythonRecipe
-          import os
-          
+
           class Camera4kivyRecipe(PythonRecipe):
               version = 'master'
-              url = 'file://{}/camera4kivy_master.zip'.format(os.getcwd())
+              url = None
               depends = ['kivy', 'pyjnius']
               call_hostpython_via_targetpython = False
               
@@ -104,7 +108,7 @@ jobs:
           files: bin/*.apk
           tag_name: v1.0.${{ github.run_number }}
           name: "SmartHome APK v1.0.${{ github.run_number }}"
-          body: "Автоматическая сборка приложения с поддержкой camera4kivy, OpenCV и Vosk."
+          body: "Автоматическая сборка приложения с поддержкой camera4kivy и OpenCV."
           draft: false
           prerelease: false
         env:
