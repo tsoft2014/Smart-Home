@@ -63,7 +63,32 @@ jobs:
           
           python3 -m pip install --upgrade pip setuptools
           pip install "buildozer==1.5.0" "cython==0.29.36"
+
+      - name: Prepare Local camera4kivy Recipe
+        run: |
+          mkdir -p local_recipes/camera4kivy
           
+          # Скачиваем архив с надежным повтором при сбое 504
+          for i in {1..5}; do
+            curl -L https://github.com/mitch-cult/camera4kivy/archive/master.zip -o camera4kivy_master.zip && break
+            echo "Попытка скачивания не удалась, повторяем через 5 секунд..."
+            sleep 5
+          done
+          
+          # Создаем локальный рецепт p4a, который берет архив с локального диска
+          cat << 'EOF' > local_recipes/camera4kivy/__init__.py
+          from pythonforandroid.recipe import PythonRecipe
+          import os
+          
+          class Camera4kivyRecipe(PythonRecipe):
+              version = 'master'
+              url = 'file://{}/camera4kivy_master.zip'.format(os.getcwd())
+              depends = ['kivy', 'pyjnius']
+              call_hostpython_via_targetpython = False
+              
+          recipe = Camera4kivyRecipe()
+          EOF
+
       - name: Clean Broken Buildozer Cache
         run: |
           rm -rf .buildozer
@@ -79,7 +104,7 @@ jobs:
           files: bin/*.apk
           tag_name: v1.0.${{ github.run_number }}
           name: "SmartHome APK v1.0.${{ github.run_number }}"
-          body: "Автоматическая сборка приложения с поддержкой OpenCV и Vosk."
+          body: "Автоматическая сборка приложения с поддержкой camera4kivy, OpenCV и Vosk."
           draft: false
           prerelease: false
         env:
