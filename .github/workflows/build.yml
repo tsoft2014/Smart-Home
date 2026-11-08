@@ -63,21 +63,21 @@ jobs:
           python3 -m pip install --upgrade pip setuptools
           pip install "buildozer==1.5.0" "cython==0.29.36"
 
-      - name: Download camera4kivy via Checkout
-        uses: actions/checkout@v4
-        with:
-          repository: mitch-cult/camera4kivy
-          ref: master
-          path: camera4kivy_src
-
-      - name: Prepare Local camera4kivy Recipe
+      - name: Prepare Local camera4kivy Source
         run: |
           mkdir -p local_recipes/camera4kivy
           
-          # Копируем содержимое скачанного через checkout репозитория в папку локального рецепта p4a
-          cp -r camera4kivy_src/* local_recipes/camera4kivy/
+          # Пробуем клонировать из альтернативных актуальных источников
+          git clone --depth 1 https://github.com/Android-for-Python/camera4kivy.git camera4kivy_src || \
+          git clone --depth 1 https://github.com/mitch-cult/camera4kivy.git camera4kivy_src || true
           
-          # Создаем рецепт p4a с url = None для сборки из локальных файлов
+          if [ -d "camera4kivy_src" ] && [ "$(ls -A camera4kivy_src)" ]; then
+            cp -r camera4kivy_src/* local_recipes/camera4kivy/
+          else
+            echo "Не удалось найти репозиторий camera4kivy"
+            exit 1
+          fi
+          
           cat << 'EOF' > local_recipes/camera4kivy/__init__.py
           from pythonforandroid.recipe import PythonRecipe
 
