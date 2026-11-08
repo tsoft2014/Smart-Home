@@ -4573,29 +4573,37 @@ class AICameraScreen(BaseScreen):
         # Выбираем лучший доступный способ отображения камеры в зависимости от платформы и наличия модулей
         if platform == 'android':
             if HAS_CAMERA4KIVY:
-                print("[AI CAMERA] Используем современный Preview от camera4kivy с матричным поворотом")
+                print("[AI CAMERA] Используем современный Preview от camera4kivy с матричным поворотом через контейнер")
+
+                # Создаем контейнер для кадра, чтобы безопасно повернуть его целиком
+                cam_container = FloatLayout(size_hint=(1, 1))
+
                 self.img_feed = Preview(
                     size_hint=(1, 1),
                     aspect_ratio='fill'
                 )
+                cam_container.add_widget(self.img_feed)
 
-                # Принудительный поворот и центровка холста камеры через матрицу Kivy
-                with self.img_feed.canvas.before:
+                # Принудительный поворот и центровка контейнера камеры через матрицу Kivy
+                with cam_container.canvas.before:
                     from kivy.graphics import PushMatrix, PopMatrix, Rotate, Translate
                     PushMatrix()
-                    self.cam_translate = Translate(0, 0, 0)
-                    # Поворачиваем на -90 градусов (или 90, если повернется в другую сторону)
-                    self.cam_rot = Rotate(angle=-90, origin=(0, 0))
-                with self.img_feed.canvas.after:
+                    self.c_trans_to = Translate(0, 0, 0)
+                    # Если после сборки картинка повернется не в ту сторону, замените -90 на 90
+                    self.c_rot = Rotate(angle=-90, axis=(0, 0, 1))
+                    self.c_trans_from = Translate(0, 0, 0)
+                with cam_container.canvas.after:
                     PopMatrix()
 
-                def update_cam_transform(instance, *args):
-                    # Центрируем точку вращения по центру виджета
-                    self.cam_rot.origin = instance.center
-                    # Сдвигаем обратно для компенсации пропорций
-                    self.cam_translate.xy = (instance.width / 2, instance.height / 2)
+                def update_container_transform(instance, *args):
+                    self.c_rot.origin = (0, 0)
+                    self.c_trans_to.xy = (-instance.center_x, -instance.center_y)
+                    self.c_trans_from.xy = (instance.center_x, instance.center_y)
 
-                self.img_feed.bind(pos=update_cam_transform, size=update_cam_transform)
+                cam_container.bind(pos=update_container_transform, size=update_container_transform)
+
+                # Назначаем контейнер главным виджетом для добавления в макет
+                self.img_feed = cam_container
 
             elif HAS_KIVY_CAMERA:
                 print("[AI CAMERA] camera4kivy не найден, используем стандартный kivy.uix.camera.Camera")
