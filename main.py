@@ -4573,12 +4573,30 @@ class AICameraScreen(BaseScreen):
         # Выбираем лучший доступный способ отображения камеры в зависимости от платформы и наличия модулей
         if platform == 'android':
             if HAS_CAMERA4KIVY:
-                print("[AI CAMERA] Используем современный Preview от camera4kivy")
+                print("[AI CAMERA] Используем современный Preview от camera4kivy с матричным поворотом")
                 self.img_feed = Preview(
                     size_hint=(1, 1),
-                    aspect_ratio='fill',
-                    rotation=270  # Аппаратный поворот кадра
+                    aspect_ratio='fill'
                 )
+
+                # Принудительный поворот и центровка холста камеры через матрицу Kivy
+                with self.img_feed.canvas.before:
+                    from kivy.graphics import PushMatrix, PopMatrix, Rotate, Translate
+                    PushMatrix()
+                    self.cam_translate = Translate(0, 0, 0)
+                    # Поворачиваем на -90 градусов (или 90, если повернется в другую сторону)
+                    self.cam_rot = Rotate(angle=-90, origin=(0, 0))
+                with self.img_feed.canvas.after:
+                    PopMatrix()
+
+                def update_cam_transform(instance, *args):
+                    # Центрируем точку вращения по центру виджета
+                    self.cam_rot.origin = instance.center
+                    # Сдвигаем обратно для компенсации пропорций
+                    self.cam_translate.xy = (instance.width / 2, instance.height / 2)
+
+                self.img_feed.bind(pos=update_cam_transform, size=update_cam_transform)
+
             elif HAS_KIVY_CAMERA:
                 print("[AI CAMERA] camera4kivy не найден, используем стандартный kivy.uix.camera.Camera")
                 self.img_feed = Camera(
@@ -4604,8 +4622,8 @@ class AICameraScreen(BaseScreen):
                 print("[AI CAMERA ERROR] OpenCV не найден на ПК!")
                 self.img_feed = Image(size_hint=(1, 1))
 
-        # Добавляем виджет камеры в макет ровно один раз
         root_layout.add_widget(self.img_feed)
+
 
         # 2. Оверлей с центральным квадратом (зона поиска)
         self.overlay = ViewfinderOverlay(size_hint=(1, 1))
