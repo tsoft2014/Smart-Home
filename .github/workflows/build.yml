@@ -67,20 +67,13 @@ jobs:
         run: |
           mkdir -p local_recipes/camera4kivy
           
-          # Скачиваем архив с повторами при сетевых сбоях
-          for i in {1..5}; do
-            curl -L https://github.com/mitch-cult/camera4kivy/archive/master.zip -o camera4kivy.zip && break
-            echo "Попытка скачивания не удалась, повторяем..."
-            sleep 5
-          done
+          # Клонируем исходный код через стабильный git-протокол
+          git clone --depth 1 https://github.com/mitch-cult/camera4kivy.git camera4kivy_src
           
-          # Распаковываем архив
-          unzip -q camera4kivy.zip
+          # Копируем содержимое в папку локального рецепта p4a
+          cp -r camera4kivy_src/* local_recipes/camera4kivy/
           
-          # Копируем содержимое распакованного пакета прямо в папку локального рецепта
-          cp -r camera4kivy-master/* local_recipes/camera4kivy/
-          
-          # Создаем рецепт p4a с url = None (сборка из файлов в папке рецепта)
+          # Создаем рецепт p4a с url = None для сборки из локальных файлов
           cat << 'EOF' > local_recipes/camera4kivy/__init__.py
           from pythonforandroid.recipe import PythonRecipe
 
@@ -108,7 +101,7 @@ jobs:
           files: bin/*.apk
           tag_name: v1.0.${{ github.run_number }}
           name: "SmartHome APK v1.0.${{ github.run_number }}"
-          body: "Автоматическая сборка приложения с поддержкой camera4kivy и OpenCV."
+          body: "Автоматическая сборка приложения с поддержкой camera4kivy, OpenCV и Vosk."
           draft: false
           prerelease: false
         env:
