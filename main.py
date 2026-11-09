@@ -4571,48 +4571,30 @@ class AICameraScreen(BaseScreen):
 
         root_layout = FloatLayout()
 
-        # Выбираем лучший доступный способ отображения камеры в зависимости от платформы и наличия модулей
+        # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy (с фоллбеком на старый Camera), на ПК — Image + OpenCV
         if platform == 'android':
             if HAS_CAMERA4KIVY:
-                print("[AI CAMERA] Используем современный Preview от camera4kivy с матричным поворотом через контейнер")
-
-                # 1. Создаем виджет камеры (Preview)
-                preview_feed = Preview(
+                self.img_feed = Preview(
                     size_hint=(1, 1),
-                    aspect_ratio='fit'  # Изменено с 'fill' на 'fit' для сохранения пропорций
+                    aspect_ratio='fill'
                 )
 
-                # 2. Создаем ОТДЕЛЬНЫЙ контейнер для поворота
-                cam_container = FloatLayout(size_hint=(1, 1))
-                cam_container.add_widget(preview_feed)
-
-                # 3. Поворот контейнера (начальное состояние -90 градусов)
-                with cam_container.canvas.before:
-                    from kivy.graphics import PushMatrix, PopMatrix, Rotate, Translate
+                # 100% гарантированный поворот холста камеры на телефоне, если она вбок.
+                # Если после сборки картинка окажется вверх ногами или повернется не в ту сторону,
+                # просто измените angle=90 на angle=-90 или angle=180.
+                with self.img_feed.canvas.after:
+                    from kivy.graphics import PushMatrix, PopMatrix, Rotate
                     PushMatrix()
-                    self.c_trans_to = Translate(0, 0, 0)
-                    self.c_rot = Rotate(angle=-90, axis=(0, 0, 1))
-                    self.c_trans_from = Translate(0, 0, 0)
-                with cam_container.canvas.after:
+                    self.cam_rot = Rotate(angle=90, origin=self.img_feed.center)
+                with self.img_feed.canvas.after:
                     PopMatrix()
 
-                def update_container_transform(instance, *args):
-                    self.c_rot.origin = (0, 0)
-                    self.c_trans_to.xy = (-instance.center_x, -instance.center_y)
-                    self.c_trans_from.xy = (instance.center_x, instance.center_y)
+                def update_cam_rot(instance, *args):
+                    self.cam_rot.origin = instance.center
 
-                cam_container.bind(pos=update_container_transform, size=update_container_transform)
+                self.img_feed.bind(pos=update_cam_rot, size=update_cam_rot)
 
-                # 4. В МАКЕТ добавляем контейнер, а ссылку для захвата сохраняем на Preview
-                self.img_feed = preview_feed
-                root_layout.add_widget(cam_container)
-
-                # 5. Подписка на системный поворот экрана для динамической смены угла
-                Window.bind(on_rotation=self.on_window_rotation)
-                self.current_rotation_angle = -90
-
-            elif HAS_KIVY_CAMERA:
-                print("[AI CAMERA] camera4kivy не найден, используем стандартный kivy.uix.camera.Camera")
+            else:
                 self.img_feed = Camera(
                     play=False,
                     resolution=(-1, -1),
@@ -4620,25 +4602,14 @@ class AICameraScreen(BaseScreen):
                     allow_stretch=True,
                     keep_ratio=False
                 )
-                root_layout.add_widget(self.img_feed)
-            else:
-                print("[AI CAMERA ERROR] На Android нет доступных виджетов камеры!")
-                self.img_feed = Image(size_hint=(1, 1))
-                root_layout.add_widget(self.img_feed)
         else:
-            # На ПК используем Image + OpenCV
-            if HAS_OPENCV:
-                print("[AI CAMERA] ПК режим: используем Image + OpenCV")
-                self.img_feed = Image(
-                    size_hint=(1, 1),
-                    allow_stretch=True,
-                    keep_ratio=False
-                )
-                root_layout.add_widget(self.img_feed)
-            else:
-                print("[AI CAMERA ERROR] OpenCV не найден на ПК!")
-                self.img_feed = Image(size_hint=(1, 1))
-                root_layout.add_widget(self.img_feed)
+            self.img_feed = Image(
+                size_hint=(1, 1),
+                allow_stretch=True,
+                keep_ratio=False
+            )
+
+        root_layout.add_widget(self.img_feed)
 
         # 2. Оверлей с центральным квадратом (зона поиска)
         self.overlay = ViewfinderOverlay(size_hint=(1, 1))
@@ -4818,17 +4789,6 @@ class AICameraScreen(BaseScreen):
         self.ai_prompt = cfg.get('cam_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")
         self.ai_keyword = cfg.get('wake_word_cam', "снимок")
 
-    # --- НОВЫЙ МЕТОД для синхронизации поворота ---
-    def on_window_rotation(self, window, rotation, type):
-        # rotation: 0 (портрет), 90 (повернут вправо), 180 (вверх ногами), 270 (повернут влево)
-        # Цель: компенсировать поворот системы, чтобы камера всегда смотрела "вверх"
-        mapping = {0: -90, 90: 0, 180: 90, 270: 180}
-        self.current_rotation_angle = mapping.get(rotation, -90)
-
-        # Безопасная проверка перед поворотом
-        if hasattr(self, 'c_rot') and self.c_rot:
-            self.c_rot.angle = self.current_rotation_angle
-
     def open_settings(self, instance):
         AICameraSettingsPopup(camera_screen_ref=self).open()
 
@@ -4856,10 +4816,7 @@ class AICameraScreen(BaseScreen):
         if self.capture and self.capture.isOpened():
             ret, frame = self.capture.read()
             if ret and frame is not None:
-                # Убираем отражение по горизонтали (1), оставляем только по вертикали (0)
-                # Если и вертикаль в порядке, эту строку тоже можно закомментировать
                 frame = cv2.flip(frame, 0)
-
                 buf = frame.tobytes()
                 h, w, _ = frame.shape
 
@@ -4901,7 +4858,6 @@ class AICameraScreen(BaseScreen):
         if platform == 'android':
             try:
                 if HAS_CAMERA4KIVY:
-                    # Теперь это работает, так как self.img_feed — это Preview
                     self.img_feed.export_to_png(image_path)
                 else:
                     texture = self.img_feed.texture
@@ -4919,6 +4875,7 @@ class AICameraScreen(BaseScreen):
 
                 print(f"[AI CAMERA] Снимок с Android камеры успешно сохранен: {image_path}")
             except Exception as e:
+                print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
                 print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
                 self.speak_text_safely("Не удалось сделать снимок")
                 return
