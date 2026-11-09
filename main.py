@@ -54,6 +54,7 @@ from kivy.core.image import Texture
 from kivy.graphics import Color, RoundedRectangle, Rectangle, Ellipse, Triangle
 from kivy.core.clipboard import Clipboard  # <--- Убедитесь, что Clipboard импортирован в начале файла
 
+
 # Проверки наличия модулей
 try:
     from camera4kivy import Preview
@@ -4571,26 +4572,26 @@ class AICameraScreen(BaseScreen):
 
         root_layout = FloatLayout()
 
-        # === ДОБАВЛЯЕМ ЧЕРНЫЙ ФОН ПОД КАМЕРУ ===
-        with root_layout.canvas.before:
-            Color(0, 0, 0, 1)  # Черный цвет (RGBA)
-            self.bg_rect = Rectangle(size=root_layout.size, pos=root_layout.pos)
-        root_layout.bind(
-            size=lambda inst, val: setattr(self.bg_rect, 'size', val),
-            pos=lambda inst, val: setattr(self.bg_rect, 'pos', val)
-        )
-
-        # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy (с фоллбеком на старый Camera), на ПК — Image + OpenCV
+        # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy
         if platform == 'android':
             if HAS_CAMERA4KIVY:
-                self.img_feed = Preview(
-                    size_hint=(1, 1),
-                    aspect_ratio='fill'
+                # Создаем контейнер для камеры с черным фоном по умолчанию
+                cam_wrapper = FloatLayout(size_hint=(1, 1))
+                with cam_wrapper.canvas.before:
+                    Color(0, 0, 0, 1)  # Черный фон для перекрытия белого моргания
+                    self.cam_bg_rect = Rectangle(size=cam_wrapper.size, pos=cam_wrapper.pos)
+                cam_wrapper.bind(
+                    size=lambda inst, val: setattr(self.cam_bg_rect, 'size', val),
+                    pos=lambda inst, val: setattr(self.cam_bg_rect, 'pos', val)
                 )
 
-                # 100% гарантированный поворот холста камеры на телефоне, если она вбок.
-                # Если после сборки картинка окажется вверх ногами или повернется не в ту сторону,
-                # просто измените angle=90 на angle=-90 или angle=180.
+                self.img_feed = Preview(
+                    size_hint=(1, 1),
+                    aspect_ratio='fill',
+                    letterbox_color=[0, 0, 0, 1]
+                )
+
+                # Поворот холста
                 with self.img_feed.canvas.after:
                     from kivy.graphics import PushMatrix, PopMatrix, Rotate
                     PushMatrix()
@@ -4603,6 +4604,12 @@ class AICameraScreen(BaseScreen):
 
                 self.img_feed.bind(pos=update_cam_rot, size=update_cam_rot)
 
+                # ВАЖНО: Кладем Preview внутрь черного контейнера
+                cam_wrapper.add_widget(self.img_feed)
+
+                # Добавляем контейнер в главный макет
+                root_layout.add_widget(cam_wrapper)
+
             else:
                 self.img_feed = Camera(
                     play=False,
@@ -4611,14 +4618,14 @@ class AICameraScreen(BaseScreen):
                     allow_stretch=True,
                     keep_ratio=False
                 )
+                root_layout.add_widget(self.img_feed)
         else:
             self.img_feed = Image(
                 size_hint=(1, 1),
                 allow_stretch=True,
                 keep_ratio=False
             )
-
-        root_layout.add_widget(self.img_feed)
+            root_layout.add_widget(self.img_feed)
 
         # 2. Оверлей с центральным квадратом (зона поиска)
         self.overlay = ViewfinderOverlay(size_hint=(1, 1))
@@ -4855,7 +4862,7 @@ class AICameraScreen(BaseScreen):
 
     @mainthread
     def capture_and_process_ai(self, *args):
-        """Делает снимок через camera4kivy.capture_photo или OpenCV (на ПК), затем вырезает зону поиска"""
+        """Делает снимок через camera4kivy.capture_photo"""
         image_path = "snapshot_ai.jpg"
 
         if os.path.exists(image_path):
@@ -4867,37 +4874,34 @@ class AICameraScreen(BaseScreen):
         if platform == 'android':
             try:
                 if HAS_CAMERA4KIVY:
-                    # Функция для получения пути к сохраненному файлу от camera4kivy
-                    captured_files = []
-
-                    def on_photo_saved(filename):
-                        print(f"[AI CAMERA] Фото сохранено camera4kivy: {filename}")
-                        captured_files.append(filename)
-
-                    # Запускаем штатный захват фото camera4kivy
-                    # Указываем location='private' для сохранения в локальное хранилище приложения
+                    # camera4kivy сохраняет файл автоматически.
+                    # Указываем сохранение во внешнюю/приватную директорию с понятным именем.
                     self.img_feed.capture_photo(
                         location='private',
                         subdir='AI_Snapshots',
-                        name='snapshot',
-                        filepath_callback=on_photo_saved
+                        name='snapshot'
                     )
 
-                    # Ожидаем завершения сохранения файла (асинхронный процесс)
-                    timeout = 3.0
-                    start_time = time.time()
-                    while not captured_files and (time.time() - start_time) < timeout:
-                        time.sleep(0.1)
+                    # Даем небольшой запас времени на запись файла на флеш-память телефона
+                    time.sleep(0.8)
 
-                    if captured_files and os.path.exists(captured_files[0]):
-                        # Копируем в наш целевой путь snapshot_ai.jpg для дальнейшей обработки
+                    # Ищем сохраненный файл в приватной папке приложения
+                    import glob
+                    search_pattern = "/data/user/0/org.smarthome.smarthome/files/app/AI_Snapshots/snapshot*.jpg"
+                    files = glob.glob(search_pattern)
+
+                    if files:
+                        # Берем самый свежий файл
+                        latest_file = max(files, key=os.path.getctime)
                         import shutil
-                        shutil.copy(captured_files[0], image_path)
+                        shutil.copy(latest_file, image_path)
+                        print(f"[AI CAMERA] Снимок успешно скопирован из {latest_file}")
                     else:
-                        print("[AI CAMERA ERROR] Таймаут сохранения снимка camera4kivy")
+                        print("[AI CAMERA ERROR] Файл снимка не найден в директории camera4kivy")
                         self.speak_text_safely("Не удалось сделать снимок")
                         return
                 else:
+                    # Фоллбек для старого Camera виджета
                     texture = self.img_feed.texture
                     if texture and PilImage:
                         img_pil = PilImage.frombytes(mode='rgba', size=texture.size, data=texture.pixels)
@@ -4909,12 +4913,12 @@ class AICameraScreen(BaseScreen):
                     self.speak_text_safely("Не удалось сделать снимок")
                     return
 
-                print(f"[AI CAMERA] Снимок с Android камеры успешно подготовлен: {image_path}")
             except Exception as e:
                 print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
                 self.speak_text_safely("Не удалось сделать снимок")
                 return
         else:
+            # ПК версия с OpenCV
             if not self.capture or not self.capture.isOpened():
                 print("[AI CAMERA] Ошибка: Камера на ПК не активна")
                 return
@@ -4925,7 +4929,7 @@ class AICameraScreen(BaseScreen):
                 return
             cv2.imwrite(image_path, frame)
 
-        # Обработка изображения через OpenCV (вырезка центрального квадрата / зоны поиска)
+        # Обработка изображения через OpenCV (вырезка зоны поиска)
         try:
             img = cv2.imread(image_path)
             if img is not None:
