@@ -4570,24 +4570,24 @@ class AICameraScreen(BaseScreen):
         # Переменная для сохранения последнего ответа ИИ (для кнопки "Повтор")
         self.last_ai_response = ""
 
-        root_layout = FloatLayout()
+        self.root_layout = FloatLayout()
 
         # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy
         if platform == 'android':
             if HAS_CAMERA4KIVY:
                 # Создаем контейнер для камеры с черным фоном по умолчанию
-                cam_wrapper = FloatLayout(size_hint=(1, 1))
-                with cam_wrapper.canvas.before:
+                self.cam_wrapper = FloatLayout(size_hint=(1, 1))
+                with self.cam_wrapper.canvas.before:
                     Color(0, 0, 0, 1)  # Черный фон для перекрытия белого моргания
-                    self.cam_bg_rect = Rectangle(size=cam_wrapper.size, pos=cam_wrapper.pos)
-                cam_wrapper.bind(
+                    self.cam_bg_rect = Rectangle(size=self.cam_wrapper.size, pos=self.cam_wrapper.pos)
+                self.cam_wrapper.bind(
                     size=lambda inst, val: setattr(self.cam_bg_rect, 'size', val),
                     pos=lambda inst, val: setattr(self.cam_bg_rect, 'pos', val)
                 )
 
                 self.img_feed = Preview(
                     size_hint=(1, 1),
-                    aspect_ratio='fill',
+                    aspect_ratio='4:3',
                     letterbox_color=[0, 0, 0, 1]
                 )
 
@@ -4604,11 +4604,9 @@ class AICameraScreen(BaseScreen):
 
                 self.img_feed.bind(pos=update_cam_rot, size=update_cam_rot)
 
-                # ВАЖНО: Кладем Preview внутрь черного контейнера
-                cam_wrapper.add_widget(self.img_feed)
-
-                # Добавляем контейнер в главный макет
-                root_layout.add_widget(cam_wrapper)
+                # Кладем Preview внутрь черного контейнера
+                self.cam_wrapper.add_widget(self.img_feed)
+                self.root_layout.add_widget(self.cam_wrapper)
 
             else:
                 self.img_feed = Camera(
@@ -4618,20 +4616,32 @@ class AICameraScreen(BaseScreen):
                     allow_stretch=True,
                     keep_ratio=False
                 )
-                root_layout.add_widget(self.img_feed)
+                self.root_layout.add_widget(self.img_feed)
         else:
             self.img_feed = Image(
                 size_hint=(1, 1),
                 allow_stretch=True,
                 keep_ratio=False
             )
-            root_layout.add_widget(self.img_feed)
+            self.root_layout.add_widget(self.img_feed)
 
-        # 2. Оверлей с центральным квадратом (зона поиска)
+        # 2. Черная шторка для маскировки белого моргания при старте
+        if platform == 'android' and HAS_CAMERA4KIVY:
+            self.startup_cover = Widget(size_hint=(1, 1))
+            with self.startup_cover.canvas.before:
+                Color(0, 0, 0, 1)
+                self.cover_rect = Rectangle(size=self.startup_cover.size, pos=self.startup_cover.pos)
+            self.startup_cover.bind(
+                size=lambda inst, val: setattr(self.cover_rect, 'size', val),
+                pos=lambda inst, val: setattr(self.cover_rect, 'pos', val)
+            )
+            self.root_layout.add_widget(self.startup_cover)
+
+        # 3. Оверлей с центральным квадратом (зона поиска)
         self.overlay = ViewfinderOverlay(size_hint=(1, 1))
-        root_layout.add_widget(self.overlay)
+        self.root_layout.add_widget(self.overlay)
 
-        # 3. ВЕРХНЯЯ ПАНЕЛЬ
+        # 4. ВЕРХНЯЯ ПАНЕЛЬ
         top_container = BoxLayout(
             orientation='vertical',
             size_hint=(1, None),
@@ -4684,9 +4694,9 @@ class AICameraScreen(BaseScreen):
         top_bar.add_widget(btn_settings)
 
         top_container.add_widget(top_bar)
-        root_layout.add_widget(top_container)
+        self.root_layout.add_widget(top_container)
 
-        # 4. НИЖНЯЯ ПАНЕЛЬ С КНОПКАМИ УПРАВЛЕНИЯ
+        # 5. НИЖНЯЯ ПАНЕЛЬ С КНОПКАМИ УПРАВЛЕНИЯ
         bottom_container = BoxLayout(
             orientation='vertical',
             size_hint=(1, None),
@@ -4701,14 +4711,13 @@ class AICameraScreen(BaseScreen):
             pos=lambda inst, val: setattr(self.bottom_rect, 'pos', val)
         )
 
-        # Используем горизонтальный BoxLayout вместо FloatLayout
         bottom_bar = BoxLayout(
             orientation='horizontal',
             size_hint=(1, 1),
-            padding=[dp(25), 0, dp(25), 0]  # Отступы слева и справа от краев экрана
+            padding=[dp(25), 0, dp(25), 0]
         )
 
-        # --- Кнопка слева: ПОВТОР (с иконкой Play) ---
+        # --- Кнопка слева: ПОВТОР ---
         self.btn_repeat = Button(
             text="",
             size_hint=(None, None),
@@ -4743,7 +4752,6 @@ class AICameraScreen(BaseScreen):
         self.btn_repeat.bind(on_press=lambda x: self.repeat_last_response())
         bottom_bar.add_widget(self.btn_repeat)
 
-        # 1-й Распорщик (занимает всё свободное пространство между левой и центральной кнопкой)
         bottom_bar.add_widget(Widget(size_hint_x=1))
 
         # --- Кнопка по центру: СНИМОК ---
@@ -4755,10 +4763,9 @@ class AICameraScreen(BaseScreen):
         self.btn_capture.bind(on_press=lambda x: self.capture_and_process_ai())
         bottom_bar.add_widget(self.btn_capture)
 
-        # 2-й Распорщик (занимает всё пространство между центральной и правой кнопкой)
         bottom_bar.add_widget(Widget(size_hint_x=1))
 
-        # --- Кнопка справа: ОТМЕНА ОЗВУЧКИ (с иконкой Стоп) ---
+        # --- Кнопка справа: ОТМЕНА ОЗВУЧКИ ---
         self.btn_stop_speech = Button(
             text="",
             size_hint=(None, None),
@@ -4793,9 +4800,9 @@ class AICameraScreen(BaseScreen):
         bottom_bar.add_widget(self.btn_stop_speech)
 
         bottom_container.add_widget(bottom_bar)
-        root_layout.add_widget(bottom_container)
+        self.root_layout.add_widget(bottom_container)
 
-        self.add_widget(root_layout)
+        self.add_widget(self.root_layout)
 
         self.capture = None
         self._texture = None
@@ -4811,12 +4818,13 @@ class AICameraScreen(BaseScreen):
     def on_enter(self):
         if platform == 'android':
             if HAS_CAMERA4KIVY:
+                print("[AI CAMERA] Подключаем Camera4Kivy")
                 Clock.schedule_once(
-                    lambda dt: self.img_feed.connect_camera(
-                        camera_id='back'
-                    ),
+                    lambda dt: self.img_feed.connect_camera(camera_id='back'),
                     0.5
                 )
+                # Убираем черную шторку через 1 секунду, когда камера точно инициализирована
+                Clock.schedule_once(self.hide_startup_cover, 1.0)
             else:
                 if hasattr(self.img_feed, 'play'):
                     self.img_feed.play = True
@@ -4827,6 +4835,11 @@ class AICameraScreen(BaseScreen):
                     Clock.schedule_interval(self.update_frame, 1.0 / 30.0)
             except Exception as e:
                 print(f"[AI CAMERA EXCEPTION]: {e}")
+
+    def hide_startup_cover(self, dt):
+        if hasattr(self, 'startup_cover') and self.startup_cover and self.startup_cover.parent:
+            self.startup_cover.parent.remove_widget(self.startup_cover)
+            print("[AI CAMERA] Черная шторка убрана, камера активна.")
 
     def update_frame(self, dt):
         if self.capture and self.capture.isOpened():
@@ -4862,7 +4875,7 @@ class AICameraScreen(BaseScreen):
 
     @mainthread
     def capture_and_process_ai(self, *args):
-        """Делает снимок через camera4kivy.capture_photo"""
+        """Асинхронный захват фото через camera4kivy без блокировки главного потока"""
         image_path = "snapshot_ai.jpg"
 
         if os.path.exists(image_path):
@@ -4872,64 +4885,70 @@ class AICameraScreen(BaseScreen):
                 pass
 
         if platform == 'android':
-            try:
-                if HAS_CAMERA4KIVY:
-                    # camera4kivy сохраняет файл автоматически.
-                    # Указываем сохранение во внешнюю/приватную директорию с понятным именем.
-                    self.img_feed.capture_photo(
-                        location='private',
-                        subdir='AI_Snapshots',
-                        name='snapshot'
-                    )
+            if HAS_CAMERA4KIVY:
+                # Callback вызывается асинхронно, когда camera4kivy сохраняет файл
+                def on_photo_saved(filename):
+                    print(f"[AI CAMERA] Фото сохранено: {filename}")
+                    if filename and os.path.exists(filename):
+                        try:
+                            # Копируем в рабочий путь
+                            import shutil
+                            shutil.copy(filename, image_path)
 
-                    # Даем небольшой запас времени на запись файла на флеш-память телефона
-                    time.sleep(0.8)
+                            # Вырезаем зону поиска через OpenCV
+                            img = cv2.imread(image_path)
+                            if img is not None:
+                                h, w, _ = img.shape
+                                box_size = int(min(h, w) * 0.6)
+                                cx, cy = w // 2, h // 2
+                                x1 = max(0, cx - box_size // 2)
+                                y1 = max(0, cy - box_size // 2)
+                                x2 = min(w, cx + box_size // 2)
+                                y2 = min(h, cy + box_size // 2)
 
-                    # Ищем сохраненный файл в приватной папке приложения
-                    import glob
-                    search_pattern = "/data/user/0/org.smarthome.smarthome/files/app/AI_Snapshots/snapshot*.jpg"
-                    files = glob.glob(search_pattern)
+                                cropped_frame = img[y1:y2, x1:x2]
+                                cv2.imwrite(image_path, cropped_frame)
+                                print("[AI CAMERA] Зона поиска успешно вырезана.")
 
-                    if files:
-                        # Берем самый свежий файл
-                        latest_file = max(files, key=os.path.getctime)
-                        import shutil
-                        shutil.copy(latest_file, image_path)
-                        print(f"[AI CAMERA] Снимок успешно скопирован из {latest_file}")
+                            self.speak_text_safely("Снимок сделан, анализирую область...")
+                            self.send_to_gemini_vision(image_path)
+                        except Exception as e:
+                            print(f"[AI CAMERA ERROR] Ошибка обработки кадра: {e}")
+                            self.speak_text_safely("Не удалось сделать снимок")
                     else:
-                        print("[AI CAMERA ERROR] Файл снимка не найден в директории camera4kivy")
+                        print("[AI CAMERA ERROR] Файл снимка пуст или не найден")
                         self.speak_text_safely("Не удалось сделать снимок")
-                        return
-                else:
-                    # Фоллбек для старого Camera виджета
-                    texture = self.img_feed.texture
-                    if texture and PilImage:
-                        img_pil = PilImage.frombytes(mode='rgba', size=texture.size, data=texture.pixels)
-                        img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
-                        img_pil.save(image_path, format='JPEG')
 
-                if not os.path.exists(image_path):
-                    print("[AI CAMERA ERROR] Не удалось сохранить снимок с камеры телефона")
-                    self.speak_text_safely("Не удалось сделать снимок")
-                    return
-
-            except Exception as e:
-                print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
-                self.speak_text_safely("Не удалось сделать снимок")
+                # Запускаем неблокирующий захват фото
+                self.img_feed.capture_photo(
+                    location='private',
+                    subdir='',
+                    name='snapshot',
+                    filepath_callback=on_photo_saved
+                )
                 return
+            else:
+                # Фоллбек для старого Camera виджета
+                texture = self.img_feed.texture
+                if texture and PilImage:
+                    img_pil = PilImage.frombytes(mode='rgba', size=texture.size, data=texture.pixels)
+                    img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
+                    img_pil.save(image_path, format='JPEG')
         else:
             # ПК версия с OpenCV
             if not self.capture or not self.capture.isOpened():
                 print("[AI CAMERA] Ошибка: Камера на ПК не активна")
+                self.speak_text_safely("Не удалось сделать снимок")
                 return
 
             ret, frame = self.capture.read()
             if not ret or frame is None:
                 print("[AI CAMERA] Ошибка: Не удалось прочитать кадр")
+                self.speak_text_safely("Не удалось сделать снимок")
                 return
             cv2.imwrite(image_path, frame)
 
-        # Обработка изображения через OpenCV (вырезка зоны поиска)
+        # Обработка для ПК / фоллбека
         try:
             img = cv2.imread(image_path)
             if img is not None:
@@ -4943,7 +4962,6 @@ class AICameraScreen(BaseScreen):
 
                 cropped_frame = img[y1:y2, x1:x2]
                 cv2.imwrite(image_path, cropped_frame)
-                print(f"[AI CAMERA] Зона поиска успешно вырезана.")
         except Exception as e:
             print(f"[AI CAMERA CROP ERROR]: {e}")
 
