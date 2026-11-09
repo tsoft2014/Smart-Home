@@ -4571,6 +4571,15 @@ class AICameraScreen(BaseScreen):
 
         root_layout = FloatLayout()
 
+        # === ДОБАВЛЯЕМ ЧЕРНЫЙ ФОН ПОД КАМЕРУ ===
+        with root_layout.canvas.before:
+            Color(0, 0, 0, 1)  # Черный цвет (RGBA)
+            self.bg_rect = Rectangle(size=root_layout.size, pos=root_layout.pos)
+        root_layout.bind(
+            size=lambda inst, val: setattr(self.bg_rect, 'size', val),
+            pos=lambda inst, val: setattr(self.bg_rect, 'pos', val)
+        )
+
         # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy (с фоллбеком на старый Camera), на ПК — Image + OpenCV
         if platform == 'android':
             if HAS_CAMERA4KIVY:
@@ -4846,7 +4855,7 @@ class AICameraScreen(BaseScreen):
 
     @mainthread
     def capture_and_process_ai(self, *args):
-        """Делает снимок через Camera4Kivy export_to_png или OpenCV (на ПК), затем вырезает зону поиска"""
+        """Делает снимок через camera4kivy.capture_photo или OpenCV (на ПК), затем вырезает зону поиска"""
         image_path = "snapshot_ai.jpg"
 
         if os.path.exists(image_path):
@@ -4858,7 +4867,36 @@ class AICameraScreen(BaseScreen):
         if platform == 'android':
             try:
                 if HAS_CAMERA4KIVY:
-                    self.img_feed.export_to_png(image_path)
+                    # Функция для получения пути к сохраненному файлу от camera4kivy
+                    captured_files = []
+
+                    def on_photo_saved(filename):
+                        print(f"[AI CAMERA] Фото сохранено camera4kivy: {filename}")
+                        captured_files.append(filename)
+
+                    # Запускаем штатный захват фото camera4kivy
+                    # Указываем location='private' для сохранения в локальное хранилище приложения
+                    self.img_feed.capture_photo(
+                        location='private',
+                        subdir='AI_Snapshots',
+                        name='snapshot',
+                        filepath_callback=on_photo_saved
+                    )
+
+                    # Ожидаем завершения сохранения файла (асинхронный процесс)
+                    timeout = 3.0
+                    start_time = time.time()
+                    while not captured_files and (time.time() - start_time) < timeout:
+                        time.sleep(0.1)
+
+                    if captured_files and os.path.exists(captured_files[0]):
+                        # Копируем в наш целевой путь snapshot_ai.jpg для дальнейшей обработки
+                        import shutil
+                        shutil.copy(captured_files[0], image_path)
+                    else:
+                        print("[AI CAMERA ERROR] Таймаут сохранения снимка camera4kivy")
+                        self.speak_text_safely("Не удалось сделать снимок")
+                        return
                 else:
                     texture = self.img_feed.texture
                     if texture and PilImage:
@@ -4866,16 +4904,13 @@ class AICameraScreen(BaseScreen):
                         img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
                         img_pil.save(image_path, format='JPEG')
 
-                time.sleep(0.3)
-
                 if not os.path.exists(image_path):
                     print("[AI CAMERA ERROR] Не удалось сохранить снимок с камеры телефона")
                     self.speak_text_safely("Не удалось сделать снимок")
                     return
 
-                print(f"[AI CAMERA] Снимок с Android камеры успешно сохранен: {image_path}")
+                print(f"[AI CAMERA] Снимок с Android камеры успешно подготовлен: {image_path}")
             except Exception as e:
-                print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
                 print(f"[AI CAMERA ERROR] Ошибка сохранения кадра на Android: {e}")
                 self.speak_text_safely("Не удалось сделать снимок")
                 return
@@ -4910,33 +4945,6 @@ class AICameraScreen(BaseScreen):
 
         self.speak_text_safely("Снимок сделан, анализирую область...")
         self.send_to_gemini_vision(image_path)
-
-    def send_to_gemini_vision(self, image_path):
-        app = App.get_running_app()
-        prompt_text = getattr(self, 'ai_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")
-
-        def vision_thread():
-            try:
-                response_text = None
-                if hasattr(app, 'send_ai_request') and callable(app.send_ai_request):
-                    response_text = app.send_ai_request(prompt_text, image_path=image_path)
-                else:
-                    print("[AI VISION ERROR] В главном приложении не найдена функция send_ai_request")
-                    Clock.schedule_once(lambda dt: self.speak_text_safely("Ошибка конфигурации приложения"), 0)
-                    return
-
-                if response_text:
-                    print(f"[AI VISION] Ответ получен: {response_text}")
-                    self.last_ai_response = response_text
-                    Clock.schedule_once(lambda dt: self.speak_text_safely(response_text), 0)
-                else:
-                    Clock.schedule_once(lambda dt: self.speak_text_safely("Не удалось получить ответ от ИИ"), 0)
-
-            except Exception as e:
-                print(f"[AI VISION ERROR]: {e}")
-                Clock.schedule_once(lambda dt: self.speak_text_safely("Произошла ошибка при анализе изображения"), 0)
-
-        threading.Thread(target=vision_thread, daemon=True).start()
 
     def repeat_last_response(self):
         """Повторяет последний озвученный ответ ИИ"""
