@@ -4954,7 +4954,33 @@ class AICameraScreen(BaseScreen):
 
     def process_and_send_image(self, image_path):
         self.speak_text_safely("Снимок сделан, анализирую область...")
-        self.send_to_gemini_vision(image_path)
+
+        app = App.get_running_app()
+
+        import threading
+        def background_ai_task():
+            try:
+                prompt = getattr(self, 'ai_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")
+
+                # Вызываем вашу централизованную функцию отправки запроса с картинкой
+                if hasattr(app, 'send_ai_request'):
+                    response_text = app.send_ai_request(prompt, image_path=image_path)
+                else:
+                    response_text = "Ошибка: метод отправки ИИ не найден в приложении."
+
+                print(f"[AI CAMERA] Ответ от ИИ получен: {response_text}")
+
+                self.last_ai_response = response_text
+
+                if response_text:
+                    self.speak_text_safely(response_text)
+                    if hasattr(self, 'show_ai_response'):
+                        self.show_ai_response(response_text)
+            except Exception as e:
+                print(f"[AI CAMERA ERROR] Ошибка потока анализа: {e}")
+                self.speak_text_safely("Ошибка при анализе снимка")
+
+        threading.Thread(target=background_ai_task, daemon=True).start()
 
     def repeat_last_response(self):
         """Повторяет последний озвученный ответ ИИ"""
