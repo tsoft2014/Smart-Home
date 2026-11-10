@@ -4875,8 +4875,9 @@ class AICameraScreen(BaseScreen):
 
     @mainthread
     def capture_and_process_ai(self, *args):
-        """Асинхронный захват фото через camera4kivy без блокировки главного потока"""
-        image_path = "snapshot_ai.jpg"
+        """Захват фото через camera4kivy без использования неподдерживаемых callback-ов"""
+        # Путь, куда сохраним итоговый файл для ИИ
+        image_path = os.path.join(App.get_running_app().user_data_dir, "snapshot_ai.jpg")
 
         if os.path.exists(image_path):
             try:
@@ -4885,55 +4886,57 @@ class AICameraScreen(BaseScreen):
                 pass
 
         if platform == 'android':
-            if HAS_CAMERA4KIVY:
-                # Callback вызывается асинхронно, когда camera4kivy сохраняет файл
-                def on_photo_saved(filename):
-                    print(f"[AI CAMERA] Фото сохранено: {filename}")
-                    if filename and os.path.exists(filename):
-                        try:
-                            # Копируем в рабочий путь
-                            import shutil
-                            shutil.copy(filename, image_path)
+            try:
+                if HAS_CAMERA4KIVY:
+                    # Вызываем capture_photo без аргумента filepath_callback
+                    self.img_feed.capture_photo(
+                        location='private',
+                        subdir='AI_Snapshots',
+                        name='snapshot'
+                    )
 
-                            # Вырезаем зону поиска через OpenCV
-                            img = cv2.imread(image_path)
-                            if img is not None:
-                                h, w, _ = img.shape
-                                box_size = int(min(h, w) * 0.6)
-                                cx, cy = w // 2, h // 2
-                                x1 = max(0, cx - box_size // 2)
-                                y1 = max(0, cy - box_size // 2)
-                                x2 = min(w, cx + box_size // 2)
-                                y2 = min(h, cy + box_size // 2)
+                    # Даем время на запись файла на диск
+                    time.sleep(0.8)
 
-                                cropped_frame = img[y1:y2, x1:x2]
-                                cv2.imwrite(image_path, cropped_frame)
-                                print("[AI CAMERA] Зона поиска успешно вырезана.")
+                    # Ищем сохраненный файл через glob в приватной папке приложения
+                    import glob
+                    search_pattern = os.path.join(
+                        App.get_running_app().user_data_dir,
+                        "AI_Snapshots",
+                        "snapshot*.jpg"
+                    )
+                    # Также проверим альтернативный стандартный путь camera4kivy, если первый пуст
+                    files = glob.glob(search_pattern)
+                    if not files:
+                        # Проверяем в корне user_data_dir или системных путях
+                        files = glob.glob("/data/user/0/org.smarthome.smarthome/files/app/AI_Snapshots/snapshot*.jpg")
 
-                            self.speak_text_safely("Снимок сделан, анализирую область...")
-                            self.send_to_gemini_vision(image_path)
-                        except Exception as e:
-                            print(f"[AI CAMERA ERROR] Ошибка обработки кадра: {e}")
-                            self.speak_text_safely("Не удалось сделать снимок")
+                    if files:
+                        latest_file = max(files, key=os.path.getctime)
+                        import shutil
+                        shutil.copy(latest_file, image_path)
+                        print(f"[AI CAMERA] Снимок успешно скопирован из {latest_file}")
                     else:
-                        print("[AI CAMERA ERROR] Файл снимка пуст или не найден")
+                        print("[AI CAMERA ERROR] Файл снимка не найден после capture_photo")
                         self.speak_text_safely("Не удалось сделать снимок")
+                        return
+                else:
+                    # Фоллбек для старого Camera виджета
+                    texture = self.img_feed.texture
+                    if texture and PilImage:
+                        img_pil = PilImage.frombytes(mode='rgba', size=texture.size, data=texture.pixels)
+                        img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
+                        img_pil.save(image_path, format='JPEG')
 
-                # Запускаем неблокирующий захват фото
-                self.img_feed.capture_photo(
-                    location='private',
-                    subdir='',
-                    name='snapshot',
-                    filepath_callback=on_photo_saved
-                )
+                if not os.path.exists(image_path):
+                    print("[AI CAMERA ERROR] Файл снимка отсутствует на диске")
+                    self.speak_text_safely("Не удалось сделать снимок")
+                    return
+
+            except Exception as e:
+                print(f"[AI CAMERA ERROR] Ошибка при сохранении фото: {e}")
+                self.speak_text_safely("Не удалось сделать снимок")
                 return
-            else:
-                # Фоллбек для старого Camera виджета
-                texture = self.img_feed.texture
-                if texture and PilImage:
-                    img_pil = PilImage.frombytes(mode='rgba', size=texture.size, data=texture.pixels)
-                    img_pil = img_pil.transpose(PilImage.FLIP_TOP_BOTTOM)
-                    img_pil.save(image_path, format='JPEG')
         else:
             # ПК версия с OpenCV
             if not self.capture or not self.capture.isOpened():
@@ -4948,7 +4951,7 @@ class AICameraScreen(BaseScreen):
                 return
             cv2.imwrite(image_path, frame)
 
-        # Обработка для ПК / фоллбека
+        # Вырезка центральной зоны поиска через OpenCV
         try:
             img = cv2.imread(image_path)
             if img is not None:
@@ -4962,6 +4965,7 @@ class AICameraScreen(BaseScreen):
 
                 cropped_frame = img[y1:y2, x1:x2]
                 cv2.imwrite(image_path, cropped_frame)
+                print(f"[AI CAMERA] Зона поиска успешно вырезана.")
         except Exception as e:
             print(f"[AI CAMERA CROP ERROR]: {e}")
 
