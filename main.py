@@ -4294,7 +4294,7 @@ class ViewfinderOverlay(Widget):
 
 
 class RoundCaptureButton(Button):
-    """Круглая кнопка для снимка, как в телефоне"""
+    """Круглая полупрозрачная кнопка для снимка"""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -4306,16 +4306,17 @@ class RoundCaptureButton(Button):
     def update_canvas(self, *args):
         self.canvas.before.clear()
         with self.canvas.before:
-            Color(1, 1, 1, 1)
+            # Внешнее кольцо: полупрозрачный белый (альфа 0.6)
+            Color(1, 1, 1, 0.6)
             self.outer_ring = Ellipse(pos=self.pos, size=self.size)
 
             padding = dp(4)
-            Color(0.9, 0.9, 0.9, 1)
+            # Внутренний круг: чуть более мягкий полупрозрачный белый (альфа 0.8) или 0.6
+            Color(0.9, 0.9, 0.9, 0.6)
             self.inner_circle = Ellipse(
                 pos=(self.x + padding, self.y + padding),
                 size=(self.width - padding * 2, self.height - padding * 2)
             )
-        self.bind(pos=self._update_elements, size=self._update_elements)
 
     def _update_elements(self, *args):
         padding = dp(4)
@@ -4323,7 +4324,6 @@ class RoundCaptureButton(Button):
         self.outer_ring.size = self.size
         self.inner_circle.pos = (self.x + padding, self.y + padding)
         self.inner_circle.size = (self.width - padding * 2, self.height - padding * 2)
-
 
 # Класс настроек ИИ-камеры, оформленный точно так же, как SystemSettingsPopup
 class AICameraSettingsPopup(Popup):
@@ -4729,11 +4729,11 @@ class AICameraScreen(BaseScreen):
         )
 
         with self.btn_repeat.canvas.before:
-            Color(0, 0, 0, 0.4)
+            Color(0, 0, 0, 0.3)  # Полупрозрачная подложка
             self.repeat_bg = Ellipse(pos=self.btn_repeat.pos, size=self.btn_repeat.size)
 
         with self.btn_repeat.canvas:
-            Color(1, 1, 1, 1)
+            Color(1, 1, 1, 0.6)  # Полупрозрачная иконка треугольника
             self.repeat_triangle = Triangle(points=[0, 0, 0, 0, 0, 0])
 
         def update_repeat_graphics(instance, *args):
@@ -4760,6 +4760,12 @@ class AICameraScreen(BaseScreen):
             size=(dp(70), dp(70)),
             pos_hint={'center_y': 0.5}
         )
+
+        # Если в классе RoundCaptureButton под капотом используются свои графические инструкции
+        # с непрозрачным белым цветом, вы можете настроить его цвет через свойства или canvas:
+        with self.btn_capture.canvas.after:
+            Color(1, 1, 1, 0.6)  # Накладываем полупрозрачный фильтр поверх кнопки снимка
+
         self.btn_capture.bind(on_press=lambda x: self.capture_and_process_ai())
         bottom_bar.add_widget(self.btn_capture)
 
@@ -4777,11 +4783,11 @@ class AICameraScreen(BaseScreen):
         )
 
         with self.btn_stop_speech.canvas.before:
-            Color(0, 0, 0, 0.4)
+            Color(0, 0, 0, 0.3)  # Полупрозрачная подложка
             self.stop_bg = Ellipse(pos=self.btn_stop_speech.pos, size=self.btn_stop_speech.size)
 
         with self.btn_stop_speech.canvas:
-            Color(1, 1, 1, 1)
+            Color(1, 1, 1, 0.6)  # Полупрозрачная иконка стоп
             self.stop_square = Rectangle(pos=(0, 0), size=(0, 0))
 
         def update_stop_graphics(instance, *args):
@@ -4820,7 +4826,6 @@ class AICameraScreen(BaseScreen):
             if HAS_CAMERA4KIVY:
                 print("[AI CAMERA] Подключаем Camera4Kivy с filepath_callback")
 
-                # ВАЖНО: Регистрируем callback при подключении камеры
                 Clock.schedule_once(
                     lambda dt: self.img_feed.connect_camera(
                         camera_id='back',
@@ -4829,8 +4834,8 @@ class AICameraScreen(BaseScreen):
                     0.5
                 )
 
-                # Убираем черную шторку через 1 секунду, когда камера точно прогрузилась
-                Clock.schedule_once(self.hide_startup_cover, 1.0)
+                # Увеличиваем задержку до 1.5 секунд, чтобы камера точно перекрыла фон
+                Clock.schedule_once(self.hide_startup_cover, 1.5)
             else:
                 if hasattr(self.img_feed, 'play'):
                     self.img_feed.play = True
@@ -4843,9 +4848,11 @@ class AICameraScreen(BaseScreen):
                 print(f"[AI CAMERA EXCEPTION]: {e}")
 
     def hide_startup_cover(self, dt):
-        if hasattr(self, 'startup_cover') and self.startup_cover and self.startup_cover.parent:
-            self.startup_cover.parent.remove_widget(self.startup_cover)
-            print("[AI CAMERA] Черная шторка убрана, камера активна.")
+        if hasattr(self, 'startup_cover') and self.startup_cover:
+            # Плавное исчезновение шторки (если поддерживается анимация) или просто удаление
+            if self.startup_cover.parent:
+                self.startup_cover.parent.remove_widget(self.startup_cover)
+            print("[AI CAMERA] Черная шторка скрыта.")
 
     def update_frame(self, dt):
         if self.capture and self.capture.isOpened():
