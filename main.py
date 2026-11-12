@@ -4567,10 +4567,20 @@ class AICameraScreen(BaseScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
+        # 0. ГАРАНТИРОВАННЫЙ ЧЕРНЫЙ ФОН ВСЕГО ЭКРАНА С ПЕРВОГО МИКРОКАДРА
+        with self.canvas.before:
+            Color(0, 0, 0, 1)
+            self.screen_bg = Rectangle(size=self.size, pos=self.pos)
+        self.bind(
+            size=lambda inst, val: setattr(self.screen_bg, 'size', val),
+            pos=lambda inst, val: setattr(self.screen_bg, 'pos', val)
+        )
+
         # Переменная для сохранения последнего ответа ИИ (для кнопки "Повтор")
         self.last_ai_response = ""
 
         self.root_layout = FloatLayout()
+        # ... (дальше идет ваш текущий код с cam_wrapper, img_feed, startup_cover и overlay)
 
         # 1. Слой видео с камеры: на Android используем Preview от Camera4Kivy
         if platform == 'android':
