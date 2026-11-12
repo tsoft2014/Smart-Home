@@ -4633,6 +4633,15 @@ class AICameraScreen(BaseScreen):
                 allow_stretch=True,
                 keep_ratio=False
             )
+
+            # ЗАЩИТА ОТ БЕЛОЙ ВСПЫШКИ НА ПК:
+            # Сразу создаем и подставляем черную текстуру в буфер
+            from kivy.graphics.texture import Texture
+            dummy_texture = Texture.create(size=(640, 480), colorfmt='rgb')
+            black_buf = bytes([0] * (640 * 480 * 3))
+            dummy_texture.blit_buffer(black_buf, colorfmt='rgb', bufferfmt='ubyte')
+            self.img_feed.texture = dummy_texture
+
             self.root_layout.add_widget(self.img_feed)
 
         # 2. Черная шторка для маскировки белого моргания при старте
@@ -4832,6 +4841,10 @@ class AICameraScreen(BaseScreen):
         AICameraSettingsPopup(camera_screen_ref=self).open()
 
     def on_enter(self):
+        # ПРИ КАЖДОМ ВХОДЕ на экран мгновенно возвращаем черную шторку на передний план
+        if hasattr(self, 'startup_cover'):
+            self.startup_cover.opacity = 1
+
         if platform == 'android':
             if HAS_CAMERA4KIVY:
                 print("[AI CAMERA] Подключаем Camera4Kivy с filepath_callback")
@@ -4859,9 +4872,8 @@ class AICameraScreen(BaseScreen):
 
     def hide_startup_cover(self, dt):
         if hasattr(self, 'startup_cover') and self.startup_cover:
-            # Плавное исчезновение шторки (если поддерживается анимация) или просто удаление
-            if self.startup_cover.parent:
-                self.startup_cover.parent.remove_widget(self.startup_cover)
+            # Вместо удаления из дерева виджетов просто плавно или мгновенно скрываем через прозрачность
+            self.startup_cover.opacity = 0
             print("[AI CAMERA] Черная шторка скрыта.")
 
     def update_frame(self, dt):
