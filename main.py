@@ -4840,11 +4840,7 @@ class AICameraScreen(BaseScreen):
     def open_settings(self, instance):
         AICameraSettingsPopup(camera_screen_ref=self).open()
 
-    def on_enter(self):
-        # ПРИ КАЖДОМ ВХОДЕ на экран мгновенно возвращаем черную шторку на передний план
-        if hasattr(self, 'startup_cover'):
-            self.startup_cover.opacity = 1
-
+    def on_enter(self): 
         if platform == 'android':
             if HAS_CAMERA4KIVY:
                 print("[AI CAMERA] Подключаем Camera4Kivy с filepath_callback")
@@ -4892,6 +4888,11 @@ class AICameraScreen(BaseScreen):
                 self.img_feed.canvas.ask_update()
 
     def on_leave(self):
+        # ПРИ УХОДЕ с экрана сразу возвращаем шторку в непрозрачное состояние (черный цвет).
+        # Теперь при следующем входе она будет черной с самого первого кадра!
+        if hasattr(self, 'startup_cover'):
+            self.startup_cover.opacity = 1
+
         if platform == 'android':
             if HAS_CAMERA4KIVY:
                 self.img_feed.disconnect_camera()
