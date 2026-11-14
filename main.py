@@ -122,7 +122,11 @@ if platform == 'android':
             Permission.RECORD_AUDIO,
             Permission.CAMERA,
             Permission.WRITE_EXTERNAL_STORAGE,
-            Permission.READ_EXTERNAL_STORAGE
+            Permission.READ_EXTERNAL_STORAGE,
+            # --- ДОБАВЛЯЕМ РАЗРЕШЕНИЯ ДЛЯ ТЕЛЕФОНИИ И КОНТАКТОВ ---
+            Permission.READ_CONTACTS,
+            Permission.READ_PHONE_STATE,
+            Permission.CALL_PHONE
         ])
     except Exception as e:
         print(f"[ANDROID PERMISSIONS ERROR]: {e}")
@@ -1278,6 +1282,20 @@ class VoiceAssistant:
                          config_data.get("wake_word_cam", "снимок").lower().replace(';', ',').split(',') if
                          w.strip()]
 
+            # === НОВЫЕ КЛЮЧЕВЫЕ СЛОВА ТЕЛЕФОНИИ ===
+            answer_words = [w.strip() for w in
+                            config_data.get("wake_word_answer", "алло").lower().replace(';', ',').split(',') if
+                            w.strip()]
+            reject_words = [w.strip() for w in
+                            config_data.get("wake_word_reject", "сброс").lower().replace(';', ',').split(',') if
+                            w.strip()]
+            call_words = [w.strip() for w in
+                          config_data.get("wake_word_call", "позвони").lower().replace(';', ',').split(',') if
+                          w.strip()]
+            cancel_words = [w.strip() for w in
+                            config_data.get("wake_word_call_cancel", "отмена").lower().replace(';', ',').split(',') if
+                            w.strip()]
+
             current_mode = getattr(self, 'current_session_mode', None)
 
             # Проверяем таймауты для активных режимов
@@ -1328,6 +1346,50 @@ class VoiceAssistant:
 
             is_cam_session = (getattr(self, 'current_mode', None) == "cam" and self.is_active)
             has_cam_word = any(w in norm_command for w in (cam_words if 'cam_words' in locals() else []))
+
+            # --- ПРОВЕРКА КОМАНД ТЕЛЕФОНИИ ---
+            if any(w == norm_command for w in cancel_words):
+                print(f"[TELEPHONY DEBUG] Распознана команда отмены: '{norm_command}'")
+                self.is_waiting_for_call_target = False
+                if app and hasattr(app, 'update_current_screen_status'):
+                    app.update_current_screen_status("Ассистент: Действие отменено", color=(0.8, 0.4, 0.4, 1))
+                return
+
+            if any(w == norm_command for w in answer_words):
+                print(f"[TELEPHONY DEBUG] Голосовой ответ на входящий вызов!")
+                if app and hasattr(app, 'telephony'):
+                    app.telephony.answer_incoming_call()  # <--- через app.telephony
+                return
+
+            if any(w == norm_command for w in reject_words):
+                print(f"[TELEPHONY DEBUG] Голосовой сброс входящего вызова!")
+                if app and hasattr(app, 'telephony'):
+                    app.telephony.reject_incoming_call()  # <--- через app.telephony
+                return
+
+            # Если ждали имя абонента для исходящего вызова
+            if getattr(self, 'is_waiting_for_call_target', False):
+                print(f"[TELEPHONY DEBUG] Получено имя для исходящего вызова: '{norm_command}'")
+                self.is_waiting_for_call_target = False
+                if app and hasattr(app, 'telephony'):
+                    app.telephony.execute_outgoing_call(norm_command)  # <--- через app.telephony
+                return
+
+            if any(w in norm_command for w in call_words):
+                target_part = norm_command
+                for w in call_words:
+                    target_part = target_part.replace(w, "").strip()
+
+                if target_part:
+                    print(f"[TELEPHONY DEBUG] Исходящий вызов для: '{target_part}'")
+                    if app and hasattr(app, 'telephony'):
+                        app.telephony.execute_outgoing_call(target_part)  # <--- через app.telephony
+                else:
+                    print("[TELEPHONY DEBUG] Ожидание имени абонента...")
+                    self.is_waiting_for_call_target = True
+                    if app and hasattr(app, 'update_current_screen_status'):
+                        app.update_current_screen_status("Кому позвонить? (Имя или «Отмена»)", color=(1.0, 0.6, 0.2, 1))
+                return
 
             # ==========================================
             # ПРИОРИТЕТ 1: АССИСТЕНТ 2 (СВЕТ / УМНЫЙ ДОМ)
@@ -3025,6 +3087,17 @@ class MainHubScreen(BaseScreen):
         )
         btn_camera.bind(on_press=lambda x: setattr(self.manager, 'current', 'ai_camera'))
         content_box.add_widget(btn_camera)
+
+        # Кнопка Телефон (точно такого же размера и стиля, под камерой)
+        btn_phone = FixedButton(
+            text="Телефон",
+            font_size=sp(16),
+            bg_color=(0.18, 0.45, 0.25, 1),  # Приятный зеленый оттенок для связи
+            size_hint_y=None,
+            height=dp(50)
+        )
+        btn_phone.bind(on_press=lambda x: setattr(self.manager, 'current', 'phone_settings'))
+        content_box.add_widget(btn_phone)
 
         root_layout.add_widget(content_box)
         self.add_widget(root_layout)
@@ -4840,7 +4913,7 @@ class AICameraScreen(BaseScreen):
     def open_settings(self, instance):
         AICameraSettingsPopup(camera_screen_ref=self).open()
 
-    def on_enter(self): 
+    def on_enter(self):
         if platform == 'android':
             if HAS_CAMERA4KIVY:
                 print("[AI CAMERA] Подключаем Camera4Kivy с filepath_callback")
@@ -5118,6 +5191,474 @@ class AICameraScreen(BaseScreen):
             app.is_speaking_now = False
             on_speech_finished()
 
+
+class TapTextInput(TextInput):
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            if hasattr(self, 'tap_callback') and self.tap_callback:
+                self.tap_callback(self)
+            return True
+        return super().on_touch_down(touch)
+
+
+class PhoneSettingsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        layout = FloatLayout()
+
+        with layout.canvas.before:
+            Color(0.11, 0.13, 0.17, 1)
+            bg_rect = Rectangle(size=layout.size, pos=layout.pos)
+
+        layout.bind(
+            size=lambda inst, val: setattr(bg_rect, 'size', val),
+            pos=lambda inst, val: setattr(bg_rect, 'pos', val)
+        )
+
+        top_bar = BoxLayout(
+            size_hint=(1, None),
+            height=dp(50),
+            pos_hint={'top': 1},
+            padding=[dp(10), 0, dp(10), 0],
+            spacing=dp(10)
+        )
+
+        btn_back = FixedButton(
+            text="Назад",
+            bg_color=(0.2, 0.23, 0.3, 1),
+            size_hint=(None, None),
+            width=dp(80),
+            height=dp(40),
+            font_size=sp(14)
+        )
+        btn_back.bind(on_press=lambda x: setattr(self.manager, 'current', 'main'))
+        top_bar.add_widget(btn_back)
+
+        lbl_title = Label(
+            text="Настройки ассистента звонков",
+            font_size=sp(18),
+            bold=True,
+            color=(0.9, 0.9, 0.9, 1),
+            halign='left',
+            valign='middle'
+        )
+        lbl_title.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        top_bar.add_widget(lbl_title)
+
+        layout.add_widget(top_bar)
+
+        scroll = ScrollView(
+            size_hint=(1, 1),
+            pos_hint={'top': 0.88, 'bottom': 0.12},
+            do_scroll_x=False,
+            do_scroll_y=True
+        )
+
+        content = BoxLayout(
+            orientation='vertical',
+            spacing=dp(14),
+            size_hint_y=None,
+            padding=[dp(15), dp(5), dp(15), dp(5)]
+        )
+        content.bind(minimum_height=content.setter('height'))
+        scroll.add_widget(content)
+        layout.add_widget(scroll)
+
+        def create_section_header(text):
+            lbl = Label(
+                text=text,
+                font_size=sp(17),
+                bold=False,
+                color=(0.3, 0.7, 1, 1),
+                size_hint_y=None,
+                height=dp(32),
+                halign='center',
+                valign='middle'
+            )
+            lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+            return lbl
+
+        # Логика голосового заполнения полей через Vosk
+        def start_voice_recording_for_input(text_input_instance):
+            app_ref = App.get_running_app()
+            if not hasattr(app_ref, 'assistant') or not app_ref.assistant:
+                text_input_instance.text = "Ошибка: ассистент не найден"
+                return
+
+            original_bg = text_input_instance.background_color
+            text_input_instance.background_color = (0.25, 0.2, 0.4, 1)
+            original_text = text_input_instance.text
+            text_input_instance.text = "Слушаю..."
+
+            if hasattr(app_ref, 'update_assistant_status'):
+                app_ref.update_assistant_status("Запись в настройках...", color=(1.0, 0.6, 0.2, 1))
+
+            def on_phrase_captured(phrase):
+                text_input_instance.text = phrase if phrase else original_text
+                text_input_instance.background_color = original_bg
+                if hasattr(app_ref, 'update_assistant_status'):
+                    app_ref.update_assistant_status("Ассистент: Ожидание...", color=(0.6, 0.6, 0.6, 1))
+
+            app_ref.assistant.voice_input_target = on_phrase_captured
+
+            def reset_timeout(dt):
+                if getattr(app_ref.assistant, 'voice_input_target', None) == on_phrase_captured:
+                    app_ref.assistant.voice_input_target = None
+                    text_input_instance.text = original_text
+                    text_input_instance.background_color = original_bg
+
+            Clock.schedule_once(reset_timeout, 10)
+
+        def create_voice_input(text=""):
+            inp = TapTextInput(
+                text=str(text),
+                multiline=False,
+                size_hint_y=None,
+                height=dp(40),
+                font_size=sp(13),
+                readonly=True,
+                background_color=(0.15, 0.17, 0.22, 1),
+                foreground_color=(1, 1, 1, 1),
+                halign='center',
+                padding=[dp(8), dp(10), dp(8), dp(8)]
+            )
+            inp.tap_callback = start_voice_recording_for_input
+            return inp
+
+        def create_setting_block(label_text, input_widget):
+            block = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
+            lbl = Label(
+                text=label_text,
+                font_size=sp(16),
+                bold=False,
+                color=(0.85, 0.85, 0.85, 1),
+                halign='center',
+                valign='middle',
+                size_hint_y=None,
+                height=dp(22)
+            )
+            lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+            block.add_widget(lbl)
+            input_widget.size_hint_x = 1.0
+            block.add_widget(input_widget)
+            block.height = dp(22) + dp(4) + dp(40)
+            return block
+
+        # Секция 1: Системные разрешения
+        content.add_widget(create_section_header("Системные разрешения"))
+
+        btn_permission = Button(
+            text="Запросить разрешение на оверлей",
+            size_hint=(1, None),
+            height=dp(45),
+            background_normal='',
+            background_color=(0.25, 0.35, 0.5, 1),
+            color=(1, 1, 1, 1),
+            font_size=sp(14)
+        )
+        btn_permission.bind(on_press=self.request_overlay_permission)
+        content.add_widget(btn_permission)
+
+        # Секция 2: Голосовые команды звонков (теперь с голосовым вводом TapTextInput)
+        content.add_widget(create_section_header("Голосовые команды звонков"))
+
+        app_ref = App.get_running_app()
+        config_data = getattr(app_ref, 'config_data', {})
+
+        self.input_answer_word = create_voice_input(config_data.get("wake_word_answer", "алло"))
+        content.add_widget(create_setting_block("Ключевое слово для ответа:", self.input_answer_word))
+
+        self.input_reject_word = create_voice_input(config_data.get("wake_word_reject", "сброс"))
+        content.add_widget(create_setting_block("Ключевое слово для сброса:", self.input_reject_word))
+
+        # --- Секция 3: Голосовой набор (Исходящие) ---
+        content.add_widget(create_section_header("Голосовой набор (Исходящие)"))
+
+        self.input_call_word = create_voice_input(config_data.get("wake_word_call", "позвони"))
+        content.add_widget(create_setting_block("Ключевая фраза для вызова:", self.input_call_word))
+
+        # Новое поле для отмены исходящего вызова
+        self.input_cancel_word = create_voice_input(config_data.get("wake_word_call_cancel", "отмена"))
+        content.add_widget(create_setting_block("Ключевая фраза для отмены:", self.input_cancel_word))
+
+        # Кнопка сохранения
+        btn_save = FixedButton(
+            text="Сохранить настройки",
+            bg_color=(0.18, 0.5, 0.25, 1),
+            size_hint=(None, None),
+            width=dp(320),
+            height=dp(45),
+            font_size=sp(16),
+            pos_hint={'center_x': 0.5, 'y': 0.02}
+        )
+        btn_save.bind(on_press=self.save_settings_data)
+        layout.add_widget(btn_save)
+
+        self.add_widget(layout)
+
+    def request_overlay_permission(self, instance):
+        if platform == 'android':
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Settings = autoclass('android.provider.Settings')
+                Intent = autoclass('android.content.Intent')
+                Uri = autoclass('android.net.Uri')
+
+                context = PythonActivity.mActivity
+                if not Settings.canDrawOverlays(context):
+                    intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + context.getPackageName())
+                    )
+                    context.startActivity(intent)
+            except Exception as e:
+                print(f"[PERMISSION ERROR]: {e}")
+        else:
+            print("[PC SIMULATION]: Запрос разрешения SYSTEM_ALERT_WINDOW (на ПК не требуется)")
+
+    def save_settings_data(self, instance):
+        app_ref = App.get_running_app()
+        if not hasattr(app_ref, 'config_data'):
+            app_ref.config_data = {}
+
+        # Сохранение всех ключевых слов телефонии, включая отмену
+        app_ref.config_data["wake_word_answer"] = self.input_answer_word.text.strip()
+        app_ref.config_data["wake_word_reject"] = self.input_reject_word.text.strip()
+        app_ref.config_data["wake_word_call"] = self.input_call_word.text.strip()
+        app_ref.config_data["wake_word_call_cancel"] = self.input_cancel_word.text.strip()  # <--- Сохранение отмены
+
+        if hasattr(app_ref, 'save_config'):
+            app_ref.save_config()
+            print("[CONFIG] Настройки телефонии успешно сохранены!")
+        else:
+            try:
+                config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(app_ref.config_data, f, ensure_ascii=False, indent=4)
+                print("[CONFIG] Настройки телефонии сохранены в config.json!")
+            except Exception as e:
+                print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
+
+
+if platform == 'android':
+    from jnius import autoclass, java_method, PythonJavaClass
+
+    Context = autoclass('android.content.Context')
+    Intent = autoclass('android.content.Intent')
+    IntentFilter = autoclass('android.content.IntentFilter')
+    TelephonyManager = autoclass('android.telephony.TelephonyManager')
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
+
+    class PhoneStateReceiver(PythonJavaClass):
+        __javainterfaces__ = ['android/content/BroadcastReceiver']
+        __javachain__ = ['java/lang/Object']
+
+        def __init__(self, callback):
+            super(PhoneStateReceiver, self).__init__()
+            self.callback = callback
+
+        @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
+        def onReceive(self, context, intent):
+            action = intent.getAction()
+            if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
+                state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+
+                if state == TelephonyManager.EXTRA_STATE_RINGING:
+                    incoming_number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+                    print(f"[PHONE RECEIVER] Входящий вызов! Номер: {incoming_number}")
+                    if self.callback:
+                        self.callback("ringing", incoming_number)
+
+                elif state == TelephonyManager.EXTRA_STATE_IDLE:
+                    print("[PHONE RECEIVER] Вызов завершен")
+                    if self.callback:
+                        self.callback("idle", None)
+
+
+class PhoneAssistantManager:
+    def __init__(self):
+        self.is_waiting_for_call_target = False
+        self.receiver = None
+        self.app_instance = None
+
+    def init_receiver(self, app_instance):
+        """Регистрация динамического BroadcastReceiver для отслеживания звонков"""
+        self.app_instance = app_instance
+        if platform == 'android':
+            try:
+                activity = PythonActivity.mActivity
+                self.receiver = PhoneStateReceiver(self.handle_phone_state)
+
+                intent_filter = IntentFilter()
+                intent_filter.addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
+
+                activity.registerReceiver(self.receiver, intent_filter)
+                print("[TELEPHONY] Фоновый BroadcastReceiver успешно зарегистрирован!")
+            except Exception as e:
+                print(f"[TELEPHONY RECEIVER ERROR]: {e}")
+        else:
+            print("[PC SIMULATION] Инициализация симуляции слушателя звонков")
+
+    def handle_phone_state(self, state, number):
+        """Обработчик событий от системного ресивера с озвучкой"""
+        if not self.app_instance:
+            return
+
+        if state == "ringing":
+            # Ищем имя абонента в контактах по входящему номеру
+            contact_name = self.get_contact_name_by_number(number)
+            display_text = f"Входящий вызов: {contact_name}"
+            print(f"[TELEPHONY EVENT] {display_text}")
+
+            # 1. Меняем статус на экране
+            self.app_instance.update_current_screen_status(
+                f"{display_text} («Алло» / «Сброс»)",
+                color=(1.0, 0.5, 0.2, 1)
+            )
+
+            # 2. Озвучиваем голосом через метод приложения (если он есть)
+            speech_phrase = f"Входящий вызов от абонента {contact_name}"
+            if hasattr(self.app_instance, 'speak_response'):
+                self.app_instance.speak_response(speech_phrase)
+            elif hasattr(self.app_instance, 'speak_text'):
+                self.app_instance.speak_text(speech_phrase)
+            else:
+                print(f"[SPEECH SIMULATION]: {speech_phrase}")
+
+        elif state == "idle":
+            print("[TELEPHONY EVENT] Телефон свободен")
+            self.app_instance.update_current_screen_status(
+                "Ассистент: Ожидание",
+                color=(0.6, 0.6, 0.6, 1)
+            )
+
+    def get_phone_number_by_name(self, name_query):
+        """Ищет номер телефона в контактах Android по имени"""
+        phone_number = name_query.strip()
+
+        if any(char.isdigit() for char in phone_number) and len([c for c in phone_number if c.isdigit()]) >= 3:
+            return phone_number
+
+        if platform == 'android':
+            try:
+                ContactsContract = autoclass('android.provider.ContactsContract$CommonDataKinds$Phone')
+                context = PythonActivity.mActivity
+                content_resolver = context.getContentResolver()
+
+                uri = ContactsContract.CONTENT_URI
+                projection = [
+                    ContactsContract.DISPLAY_NAME,
+                    ContactsContract.NUMBER
+                ]
+
+                selection = f"{ContactsContract.DISPLAY_NAME} LIKE ?"
+                selection_args = [f"%{name_query}%"]
+
+                cursor = content_resolver.query(uri, projection, selection, selection_args, None)
+
+                if cursor and cursor.moveToFirst():
+                    number_idx = cursor.getColumnIndex(ContactsContract.NUMBER)
+                    found_number = cursor.getString(number_idx)
+                    cursor.close()
+                    print(f"[CONTACTS] Найден контакт для '{name_query}': {found_number}")
+                    return found_number
+
+                if cursor:
+                    cursor.close()
+                print(f"[CONTACTS] Контакт '{name_query}' не найден, пробуем как текст.")
+            except Exception as e:
+                print(f"[CONTACTS ERROR]: {e}")
+
+        return phone_number
+
+    def execute_outgoing_call(self, query_target):
+        """Инициация исходящего звонка через ACTION_DIAL с поиском в контактах"""
+        phone_number = self.get_phone_number_by_name(query_target)
+        print(f"[TELEPHONY] Запуск звонка на: {phone_number}")
+
+        if platform == 'android':
+            try:
+                Intent = autoclass('android.content.Intent')
+                Uri = autoclass('android.net.Uri')
+
+                context = PythonActivity.mActivity
+                intent = Intent(Intent.ACTION_DIAL)
+                intent.setData(Uri.parse(f"tel:{phone_number}"))
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                context.startActivity(intent)
+                print(f"[CALL SUCCESS] ACTION_DIAL открыт для {phone_number}")
+            except Exception as e:
+                print(f"[CALL ERROR]: {e}")
+        else:
+            print(f"[PC SIMULATION] Имитация звонка на: {phone_number}")
+
+    def answer_incoming_call(self):
+        """Ответ на входящий вызов"""
+        print("[TELEPHONY] Ответ на входящий вызов...")
+        if platform == 'android':
+            try:
+                context = PythonActivity.mActivity
+                telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
+                if telecom_manager and hasattr(telecom_manager, 'acceptRingingCall'):
+                    telecom_manager.acceptRingingCall()
+                    print("[CALL SUCCESS] Вызов принят через TelecomManager")
+                else:
+                    print("[CALL WARNING] acceptRingingCall недоступен")
+            except Exception as e:
+                print(f"[ANSWER ERROR]: {e}")
+        else:
+            print("[PC SIMULATION] Имитация ответа на звонок")
+
+    def reject_incoming_call(self):
+        """Сброс входящего вызова"""
+        print("[TELEPHONY] Сброс входящего вызова...")
+        if platform == 'android':
+            try:
+                context = PythonActivity.mActivity
+                telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
+                if telecom_manager and hasattr(telecom_manager, 'endCall'):
+                    telecom_manager.endCall()
+                    print("[CALL SUCCESS] Вызов отклонен")
+                else:
+                    print("[CALL WARNING] endCall заблокирован системой")
+            except Exception as e:
+                print(f"[REJECT ERROR]: {e}")
+        else:
+            print("[PC SIMULATION] Имитация сброса звонка")
+
+    def get_contact_name_by_number(self, phone_number):
+        """Ищет имя контакта в Android по номеру телефона"""
+        if not phone_number or platform != 'android':
+            return phone_number
+
+        try:
+            Uri = autoclass('android.net.Uri')
+            ContactsContract = autoclass('android.provider.ContactsContract$PhoneLookup')
+
+            context = PythonActivity.mActivity
+            content_resolver = context.getContentResolver()
+
+            uri = Uri.withAppendedPath(ContactsContract.CONTENT_FILTER_URI, Uri.encode(phone_number))
+            projection = [ContactsContract.DISPLAY_NAME]
+
+            cursor = content_resolver.query(uri, projection, None, None, None)
+            if cursor and cursor.moveToFirst():
+                name_idx = cursor.getColumnIndex(ContactsContract.DISPLAY_NAME)
+                contact_name = cursor.getString(name_idx)
+                cursor.close()
+                return contact_name
+
+            if cursor:
+                cursor.close()
+        except Exception as e:
+            print(f"[CONTACTS LOOKUP ERROR]: {e}")
+
+        return phone_number
+
 class SmartApp(App):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -5129,6 +5670,8 @@ class SmartApp(App):
         self.assistant_event = None
         # Подключаем вынесенный менеджер Live-диалога
         self.live_manager = GeminiLiveManager(self)
+        # --- ПОДКЛЮЧАЕМ МЕНЕДЖЕР ТЕЛЕФОНИИ ---
+        self.telephony = PhoneAssistantManager()
 
     @property
     def is_live_active(self):
@@ -5139,7 +5682,12 @@ class SmartApp(App):
         self.live_manager.is_live_active = value
 
     def on_start(self):
+        # Инициализируем голосового ассистента
         self.init_assistant()
+
+        # Запускаем фоновое отслеживание звонков и регистрацию BroadcastReceiver
+        if hasattr(self, 'telephony'):
+            self.telephony.init_receiver(self)
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -5162,6 +5710,7 @@ class SmartApp(App):
         sm.add_widget(MainHubScreen(name='main'))
         sm.add_widget(SmartHomeScreen(name='smarthome'))
         sm.add_widget(AICameraScreen(name='ai_camera'))
+        sm.add_widget(PhoneSettingsScreen(name='phone_settings'))
         return sm
 
     def handle_user_query(self, query):
