@@ -1351,20 +1351,20 @@ class VoiceAssistant:
             if any(w == norm_command for w in cancel_words):
                 print(f"[TELEPHONY DEBUG] Распознана команда отмены: '{norm_command}'")
                 self.is_waiting_for_call_target = False
+                self.is_active = False  # Сбрасываем активность сессии
+                self.current_session_mode = None
+
                 if app and hasattr(app, 'update_current_screen_status'):
                     app.update_current_screen_status("Ассистент: Действие отменено", color=(0.8, 0.4, 0.4, 1))
-                return
 
-            if any(w == norm_command for w in answer_words):
-                print(f"[TELEPHONY DEBUG] Голосовой ответ на входящий вызов!")
-                if app and hasattr(app, 'telephony'):
-                    app.telephony.answer_incoming_call()  # <--- через app.telephony
-                return
+                    def reset_to_idle(dt):
+                        if hasattr(app, 'get_current_wake_hint'):
+                            hint = app.get_current_wake_hint()
+                        else:
+                            hint = "алиса"
+                        app.update_current_screen_status(f"Ассистент: Ожидание («{hint}»)", color=(0.6, 0.6, 0.6, 1))
 
-            if any(w == norm_command for w in reject_words):
-                print(f"[TELEPHONY DEBUG] Голосовой сброс входящего вызова!")
-                if app and hasattr(app, 'telephony'):
-                    app.telephony.reject_incoming_call()  # <--- через app.telephony
+                    Clock.schedule_once(reset_to_idle, 1.5)
                 return
 
             # Если ждали имя абонента для исходящего вызова
@@ -1372,7 +1372,7 @@ class VoiceAssistant:
                 print(f"[TELEPHONY DEBUG] Получено имя для исходящего вызова: '{norm_command}'")
                 self.is_waiting_for_call_target = False
                 if app and hasattr(app, 'telephony'):
-                    app.telephony.execute_outgoing_call(norm_command)  # <--- через app.telephony
+                    app.telephony.execute_outgoing_call(norm_command)
                 return
 
             if any(w in norm_command for w in call_words):
@@ -1383,12 +1383,17 @@ class VoiceAssistant:
                 if target_part:
                     print(f"[TELEPHONY DEBUG] Исходящий вызов для: '{target_part}'")
                     if app and hasattr(app, 'telephony'):
-                        app.telephony.execute_outgoing_call(target_part)  # <--- через app.telephony
+                        app.telephony.execute_outgoing_call(target_part)
                 else:
                     print("[TELEPHONY DEBUG] Ожидание имени абонента...")
                     self.is_waiting_for_call_target = True
+
                     if app and hasattr(app, 'update_current_screen_status'):
                         app.update_current_screen_status("Кому позвонить? (Имя или «Отмена»)", color=(1.0, 0.6, 0.2, 1))
+
+                    # ДОБАВЛЕНО: Ассистент голосом запрашивает имя
+                    if app and hasattr(app, 'telephony') and hasattr(app.telephony, 'speak_text'):
+                        app.telephony.speak_text("Кому позвонить?")
                 return
 
             # ==========================================
@@ -5519,21 +5524,19 @@ class PhoneAssistantManager:
                 color=(1.0, 0.5, 0.2, 1)
             )
 
-            # 2. Озвучиваем голосом через метод приложения (если он есть)
+            # 2. Озвучиваем голосом входящий вызов
             speech_phrase = f"Входящий вызов от абонента {contact_name}"
-            if hasattr(self.app_instance, 'speak_response'):
-                self.app_instance.speak_response(speech_phrase)
-            elif hasattr(self.app_instance, 'speak_text'):
-                self.app_instance.speak_text(speech_phrase)
-            else:
-                print(f"[SPEECH SIMULATION]: {speech_phrase}")
+            self.speak_text(speech_phrase)
+
 
         elif state == "idle":
-            print("[TELEPHONY EVENT] Телефон свободен")
+            print("[TELEPHONY EVENT] Вызов завершен / сброшен")
             self.app_instance.update_current_screen_status(
                 "Ассистент: Ожидание",
                 color=(0.6, 0.6, 0.6, 1)
             )
+            # Сбрасываем флаги ожидания целей звонка
+            self.is_waiting_for_call_target = False
 
     def get_phone_number_by_name(self, name_query):
         """Ищет номер телефона в контактах Android по имени"""
@@ -5658,6 +5661,15 @@ class PhoneAssistantManager:
             print(f"[CONTACTS LOOKUP ERROR]: {e}")
 
         return phone_number
+
+    def speak_text(self, text):
+        """Озвучка текста с помощью plyer.tts"""
+        print(f"[TELEPHONY SPEECH]: {text}")
+        try:
+            from plyer import tts
+            tts.speak(text)
+        except Exception as e:
+            print(f"[TTS ERROR]: {e}")
 
 class SmartApp(App):
     def __init__(self, **kwargs):
