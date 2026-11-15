@@ -53,7 +53,7 @@ from kivy.graphics import Color, Rectangle
 from kivy.core.image import Texture
 from kivy.graphics import Color, RoundedRectangle, Rectangle, Ellipse, Triangle
 from kivy.core.clipboard import Clipboard  # <--- Убедитесь, что Clipboard импортирован в начале файла
-
+from kivy.uix.behaviors import ButtonBehavior
 
 # Проверки наличия модулей
 try:
@@ -123,7 +123,7 @@ if platform == 'android':
             Permission.CAMERA,
             Permission.WRITE_EXTERNAL_STORAGE,
             Permission.READ_EXTERNAL_STORAGE,
-            # --- ДОБАВЛЯЕМ РАЗРЕШЕНИЯ ДЛЯ ТЕЛЕФОНИИ И КОНТАКТОВ ---
+            # --- РАЗРЕШЕНИЯ ДЛЯ ТЕЛЕФОНИИ И КОНТАКТОВ ---
             Permission.READ_CONTACTS,
             Permission.READ_PHONE_STATE,
             Permission.CALL_PHONE
@@ -142,6 +142,51 @@ if platform == 'android':
         HAS_ANDROID_AUDIO = False
 else:
     HAS_ANDROID_AUDIO = False
+
+# Условный кроссплатформенный блок для BroadcastReceiver
+if platform == 'android':
+    from jnius import autoclass, java_method, PythonJavaClass
+
+    Context = autoclass('android.content.Context')
+    Intent = autoclass('android.content.Intent')
+    IntentFilter = autoclass('android.content.IntentFilter')
+    TelephonyManager = autoclass('android.telephony.TelephonyManager')
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
+    class PhoneStateReceiver(PythonJavaClass):
+        __javainterfaces__ = ['android/content/BroadcastReceiver']
+        __javachain__ = ['java/lang/Object']
+
+        def __init__(self, callback):
+            super(PhoneStateReceiver, self).__init__()
+            self.callback = callback
+
+        @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
+        def onReceive(self, context, intent):
+            action = intent.getAction()
+            if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
+                state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+
+                if state == TelephonyManager.EXTRA_STATE_RINGING:
+                    incoming_number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+                    print(f"[PHONE RECEIVER] Входящий вызов! Номер: {incoming_number}")
+                    if self.callback:
+                        self.callback("ringing", incoming_number)
+
+                elif state == TelephonyManager.EXTRA_STATE_IDLE:
+                    print("[PHONE RECEIVER] Вызов завершен")
+                    if self.callback:
+                        self.callback("idle", None)
+else:
+    # Заглушка для отладки на ПК без падений NameError
+    class PhoneStateReceiver:
+        def __init__(self, callback):
+            self.callback = callback
+
+if platform == 'android':
+    from jnius import autoclass
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    Context = autoclass('android.content.Context')
 
 # Безопасный импорт sounddevice только для ПК
 HAS_SOUNDDEVICE = False
@@ -644,7 +689,18 @@ class VoiceAssistant:
     def clean_text_for_tts(self, text):
         if not text:
             return ""
-        # Универсальная замена точек между цифрами (например, 3.5 -> 3 и 5, 36.5 -> 36 и 5)
+
+        # --- СЛОВАРЬ ФОНЕТИЧЕСКИХ КОРРЕКЦИЙ ДЛЯ TTS ---
+        # Здесь можно прописывать слова, которые движок читает неправильно
+        pronunciation_dict = {
+            r'\bкому\b': 'каму',  # Пример точного исправления ударения/произношения
+            # r'\bдругое_слово\b': 'как_нужно_читать',
+        }
+
+        for pattern, replacement in pronunciation_dict.items():
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+        # Универсальная замена точек между цифрами (например, 3.5 -> 3 и 5)
         text = re.sub(r'(\d+)\.(\d+)', r'\1 и \2', text)
 
         # 1. Очищаем LaTeX и математические символы формулы
@@ -652,7 +708,7 @@ class VoiceAssistant:
         text = text.replace(r'{,}', ',')
         text = re.sub(r'\\text\{([^}]+)\}', r'\1', text)
         text = re.sub(r'\\mathbf\{([^}]+)\}', r'\1', text)
-        text = re.sub(r'[$*_\\{}]', '', text)  # Убираем оставшиеся теги
+        text = re.sub(r'[$*_\\{}]', '', text)
 
         # 2. Заменяем знаки операций на слова
         text = text.replace('×', ' умножить на ')
@@ -664,12 +720,10 @@ class VoiceAssistant:
         text = re.sub(r'`{1,3}', '', text)
 
         # 4. Обработка знаков препинания и спецсимволов для TTS
-        # Тире заменяем на запятую/паузу, чтобы голос не читал его как слово
         text = re.sub(r'\s*—\s*', ', ', text)
-        # Убираем кавычки, скобки и технические символы, оставляя базовую пунктуацию для пауз
         text = re.sub(r'[«»„“"\'\[\]()<>|~^]', ' ', text)
 
-        # 5. Нормализация сокращений единиц измерения для озвучки
+        # 5. Нормализация сокращений единиц измерения
         text = re.sub(r'\bмл\b', 'миллилитров', text, flags=re.IGNORECASE)
         text = re.sub(r'\bг\b', 'грамм', text, flags=re.IGNORECASE)
 
@@ -1238,6 +1292,7 @@ class VoiceAssistant:
 
             Clock.schedule_once(lambda dt: target(norm_command), 0)
             return
+
         # --- 2. БЛОКИРОВКА VOSK ЕСЛИ АКТИВЕН LIVE-ДИАЛОГ ---
         is_live = (
                 getattr(self, "is_live_active", False)
@@ -1254,7 +1309,6 @@ class VoiceAssistant:
                 print(f"[ASSISTANT DEBUG] Отсечен дубликат по времени: '{norm_command}'")
                 return
 
-        # Сохраняем параметры последней команды (блок уничтожения поллинга УДАЛЕН)
         self._last_cmd_text = norm_command
         self._last_cmd_time = current_time
 
@@ -1269,20 +1323,18 @@ class VoiceAssistant:
 
             wake_response = config_data.get("wake_response")
 
-            # Объявляем ВСЕ списки ключевых слов прямо здесь
+            # Объявляем списки ключевых слов
             ai_words = [w.strip() for w in config_data.get("wake_word_ai", "алиса").lower().replace(';', ',').split(',')
                         if w.strip()]
             live_words = [w.strip() for w in
                           config_data.get("wake_word_live", "давай поговорим").lower().replace(';', ',').split(',') if
                           w.strip()]
             light_words = [w.strip() for w in
-                           config_data.get("wake_word_light", "зал").lower().replace(';', ',').split(',') if
-                           w.strip()]
+                           config_data.get("wake_word_light", "зал").lower().replace(';', ',').split(',') if w.strip()]
             cam_words = [w.strip() for w in
-                         config_data.get("wake_word_cam", "снимок").lower().replace(';', ',').split(',') if
-                         w.strip()]
+                         config_data.get("wake_word_cam", "снимок").lower().replace(';', ',').split(',') if w.strip()]
 
-            # === НОВЫЕ КЛЮЧЕВЫЕ СЛОВА ТЕЛЕФОНИИ ===
+            # Ключевые слова телефонии
             answer_words = [w.strip() for w in
                             config_data.get("wake_word_answer", "алло").lower().replace(';', ',').split(',') if
                             w.strip()]
@@ -1329,8 +1381,7 @@ class VoiceAssistant:
             has_ai_word = any(w in norm_command for w in ai_words)
             is_ai_session = (getattr(self, 'current_session_mode', None) in ["ai",
                                                                              "text_dictation"] and self.is_active) or (
-                                        getattr(self, 'current_mode', None) in ["ai",
-                                                                                "text_dictation"] and self.is_active)
+                                    getattr(self, 'current_mode', None) in ["ai", "text_dictation"] and self.is_active)
 
             raw_text_words = getattr(app, 'config_data', {}).get('mode_word_text',
                                                                  'запрос, текст') if app else 'запрос, текст'
@@ -1341,17 +1392,31 @@ class VoiceAssistant:
             has_text_word = any(w in norm_command for w in text_words)
 
             is_light_session = (getattr(self, 'current_mode', None) == "light" and self.is_active) or (
-                        getattr(self, 'current_session_mode', None) == "light" and self.is_active)
+                    getattr(self, 'current_session_mode', None) == "light" and self.is_active)
             has_light_word = any(w in norm_command for w in (light_words if 'light_words' in locals() else []))
 
             is_cam_session = (getattr(self, 'current_mode', None) == "cam" and self.is_active)
             has_cam_word = any(w in norm_command for w in (cam_words if 'cam_words' in locals() else []))
 
-            # --- ПРОВЕРКА КОМАНД ТЕЛЕФОНИИ ---
-            if any(w == norm_command for w in cancel_words):
+            # --- А. ПРИОРИТЕТ 1: УПРАВЛЕНИЕ ВХОДЯЩИМ ЗВОНКОМ ---
+            if app and hasattr(app, 'telephony') and getattr(app.telephony, 'is_incoming_active', False):
+                if any(w in norm_command for w in answer_words):
+                    print("[TELEPHONY] Голосовая команда: Принять входящий вызов")
+                    app.telephony.answer_incoming_call()
+                    return
+
+                if any(w in norm_command for w in reject_words) or any(w in norm_command for w in cancel_words):
+                    print("[TELEPHONY] Голосовая команда: Сбросить входящий вызов")
+                    app.telephony.reject_incoming_call()
+                    if hasattr(app, 'hide_incoming_call_ui'):
+                        app.hide_incoming_call_ui()
+                    return
+
+            # --- Б. ПРИОРИТЕТ 2: КОМАНДЫ ТЕЛЕФОНИИ (ОТМЕНА / ИСХОДЯЩИЕ) ---
+            if any(w in norm_command for w in cancel_words):
                 print(f"[TELEPHONY DEBUG] Распознана команда отмены: '{norm_command}'")
                 self.is_waiting_for_call_target = False
-                self.is_active = False  # Сбрасываем активность сессии
+                self.is_active = False
                 self.current_session_mode = None
 
                 if app and hasattr(app, 'update_current_screen_status'):
@@ -1391,14 +1456,15 @@ class VoiceAssistant:
                     if app and hasattr(app, 'update_current_screen_status'):
                         app.update_current_screen_status("Кому позвонить? (Имя или «Отмена»)", color=(1.0, 0.6, 0.2, 1))
 
-                    # ДОБАВЛЕНО: Ассистент голосом запрашивает имя
                     if app and hasattr(app, 'telephony') and hasattr(app.telephony, 'speak_text'):
                         app.telephony.speak_text("Кому позвонить?")
                 return
 
             # ==========================================
-            # ПРИОРИТЕТ 1: АССИСТЕНТ 2 (СВЕТ / УМНЫЙ ДОМ)
+            # ПРИОРИТЕТ 3: УПРАВЛЕНИЕ СВЕТОМ И УМНЫМ ДОМОМ
             # ==========================================
+            # (Ваша дальнейшая логика освещения, камеры и ассистента остается здесь)
+
             if has_light_word or is_light_session:
                 print(f"[ASSISTANT DEBUG] -> ПОПАЛИ В ВЕТКУ: АССИСТЕНТ 2 (Свет)")
                 if 'light_words' in locals():
@@ -3093,7 +3159,7 @@ class MainHubScreen(BaseScreen):
         btn_camera.bind(on_press=lambda x: setattr(self.manager, 'current', 'ai_camera'))
         content_box.add_widget(btn_camera)
 
-        # Кнопка Телефон (точно такого же размера и стиля, под камерой)
+        # Кнопка Телефон (переход к настройкам)
         btn_phone = FixedButton(
             text="Телефон",
             font_size=sp(16),
@@ -3103,6 +3169,19 @@ class MainHubScreen(BaseScreen):
         )
         btn_phone.bind(on_press=lambda x: setattr(self.manager, 'current', 'phone_settings'))
         content_box.add_widget(btn_phone)
+
+        # ТЕСТОВАЯ КНОПКА (скрытая)
+        test_btn = Button(
+            text="Тест звонка",
+            size_hint=(None, None),
+            size=(dp(120), dp(50)),
+            pos_hint={'center_x': 0.5},
+            opacity=0,  # Делает кнопку полностью прозрачной (невидимой)
+            disabled=True  # Отключает нажатия на нее
+        )
+        test_btn.bind(
+            on_release=lambda x: App.get_running_app().show_incoming_call_ui("Иван Тест", "+7 (900) 555-35-35"))
+        content_box.add_widget(test_btn)
 
         root_layout.add_widget(content_box)
         self.add_widget(root_layout)
@@ -5197,10 +5276,15 @@ class AICameraScreen(BaseScreen):
             on_speech_finished()
 
 
+
 class TapTextInput(TextInput):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tap_callback = None
+
     def on_touch_down(self, touch):
         if self.collide_point(*touch.pos):
-            if hasattr(self, 'tap_callback') and self.tap_callback:
+            if self.tap_callback:
                 self.tap_callback(self)
             return True
         return super().on_touch_down(touch)
@@ -5229,13 +5313,15 @@ class PhoneSettingsScreen(Screen):
             spacing=dp(10)
         )
 
-        btn_back = FixedButton(
+        btn_back = Button(
             text="Назад",
-            bg_color=(0.2, 0.23, 0.3, 1),
+            background_normal='',
+            background_color=(0.2, 0.23, 0.3, 1),
             size_hint=(None, None),
             width=dp(80),
             height=dp(40),
-            font_size=sp(14)
+            font_size=sp(14),
+            color=(1, 1, 1, 1)
         )
         btn_back.bind(on_press=lambda x: setattr(self.manager, 'current', 'main'))
         top_bar.add_widget(btn_back)
@@ -5284,7 +5370,6 @@ class PhoneSettingsScreen(Screen):
             lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
             return lbl
 
-        # Логика голосового заполнения полей через Vosk
         def start_voice_recording_for_input(text_input_instance):
             app_ref = App.get_running_app()
             if not hasattr(app_ref, 'assistant') or not app_ref.assistant:
@@ -5365,7 +5450,7 @@ class PhoneSettingsScreen(Screen):
         btn_permission.bind(on_press=self.request_overlay_permission)
         content.add_widget(btn_permission)
 
-        # Секция 2: Голосовые команды звонков (теперь с голосовым вводом TapTextInput)
+        # Секция 2: Голосовые команды звонков
         content.add_widget(create_section_header("Голосовые команды звонков"))
 
         app_ref = App.get_running_app()
@@ -5377,25 +5462,26 @@ class PhoneSettingsScreen(Screen):
         self.input_reject_word = create_voice_input(config_data.get("wake_word_reject", "сброс"))
         content.add_widget(create_setting_block("Ключевое слово для сброса:", self.input_reject_word))
 
-        # --- Секция 3: Голосовой набор (Исходящие) ---
+        # Секция 3: Голосовой набор (Исходящие)
         content.add_widget(create_section_header("Голосовой набор (Исходящие)"))
 
         self.input_call_word = create_voice_input(config_data.get("wake_word_call", "позвони"))
         content.add_widget(create_setting_block("Ключевая фраза для вызова:", self.input_call_word))
 
-        # Новое поле для отмены исходящего вызова
         self.input_cancel_word = create_voice_input(config_data.get("wake_word_call_cancel", "отмена"))
         content.add_widget(create_setting_block("Ключевая фраза для отмены:", self.input_cancel_word))
 
         # Кнопка сохранения
-        btn_save = FixedButton(
+        btn_save = Button(
             text="Сохранить настройки",
-            bg_color=(0.18, 0.5, 0.25, 1),
+            background_normal='',
+            background_color=(0.18, 0.5, 0.25, 1),
             size_hint=(None, None),
             width=dp(320),
             height=dp(45),
             font_size=sp(16),
-            pos_hint={'center_x': 0.5, 'y': 0.02}
+            pos_hint={'center_x': 0.5, 'y': 0.02},
+            color=(1, 1, 1, 1)
         )
         btn_save.bind(on_press=self.save_settings_data)
         layout.add_widget(btn_save)
@@ -5428,11 +5514,10 @@ class PhoneSettingsScreen(Screen):
         if not hasattr(app_ref, 'config_data'):
             app_ref.config_data = {}
 
-        # Сохранение всех ключевых слов телефонии, включая отмену
         app_ref.config_data["wake_word_answer"] = self.input_answer_word.text.strip()
         app_ref.config_data["wake_word_reject"] = self.input_reject_word.text.strip()
         app_ref.config_data["wake_word_call"] = self.input_call_word.text.strip()
-        app_ref.config_data["wake_word_call_cancel"] = self.input_cancel_word.text.strip()  # <--- Сохранение отмены
+        app_ref.config_data["wake_word_call_cancel"] = self.input_cancel_word.text.strip()
 
         if hasattr(app_ref, 'save_config'):
             app_ref.save_config()
@@ -5447,55 +5532,23 @@ class PhoneSettingsScreen(Screen):
                 print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
 
 
-if platform == 'android':
-    from jnius import autoclass, java_method, PythonJavaClass
-
-    Context = autoclass('android.content.Context')
-    Intent = autoclass('android.content.Intent')
-    IntentFilter = autoclass('android.content.IntentFilter')
-    TelephonyManager = autoclass('android.telephony.TelephonyManager')
-    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-
-
-    class PhoneStateReceiver(PythonJavaClass):
-        __javainterfaces__ = ['android/content/BroadcastReceiver']
-        __javachain__ = ['java/lang/Object']
-
-        def __init__(self, callback):
-            super(PhoneStateReceiver, self).__init__()
-            self.callback = callback
-
-        @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
-        def onReceive(self, context, intent):
-            action = intent.getAction()
-            if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
-                state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
-
-                if state == TelephonyManager.EXTRA_STATE_RINGING:
-                    incoming_number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
-                    print(f"[PHONE RECEIVER] Входящий вызов! Номер: {incoming_number}")
-                    if self.callback:
-                        self.callback("ringing", incoming_number)
-
-                elif state == TelephonyManager.EXTRA_STATE_IDLE:
-                    print("[PHONE RECEIVER] Вызов завершен")
-                    if self.callback:
-                        self.callback("idle", None)
-
-
 class PhoneAssistantManager:
     def __init__(self):
         self.is_waiting_for_call_target = False
+        self.is_incoming_active = False  # Флаг активного входящего звонка для голосовых команд
         self.receiver = None
         self.app_instance = None
 
     def init_receiver(self, app_instance):
-        """Регистрация динамического BroadcastReceiver для отслеживания звонков"""
+        """Регистрация динамического BroadcastReceiver с оберткой в главный поток (Clock)"""
         self.app_instance = app_instance
         if platform == 'android':
             try:
                 activity = PythonActivity.mActivity
-                self.receiver = PhoneStateReceiver(self.handle_phone_state)
+                # Обертка гарантирует выполнение в главном потоке Kivy UI
+                self.receiver = PhoneStateReceiver(
+                    lambda state, num: Clock.schedule_once(lambda dt: self.handle_phone_state(state, num), 0)
+                )
 
                 intent_filter = IntentFilter()
                 intent_filter.addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
@@ -5508,34 +5561,43 @@ class PhoneAssistantManager:
             print("[PC SIMULATION] Инициализация симуляции слушателя звонков")
 
     def handle_phone_state(self, state, number):
-        """Обработчик событий от системного ресивера с озвучкой"""
+        """Обработчик событий от системного ресивера (выполняется в главном потоке)"""
         if not self.app_instance:
             return
 
+        config = getattr(self.app_instance, 'config_data', {})
+
         if state == "ringing":
-            # Ищем имя абонента в контактах по входящему номеру
+            self.is_incoming_active = True
             contact_name = self.get_contact_name_by_number(number)
             display_text = f"Входящий вызов: {contact_name}"
             print(f"[TELEPHONY EVENT] {display_text}")
 
-            # 1. Меняем статус на экране
-            self.app_instance.update_current_screen_status(
-                f"{display_text} («Алло» / «Сброс»)",
-                color=(1.0, 0.5, 0.2, 1)
-            )
+            # 1. Меняем статус на экране (или вызываем мини-звонилку)
+            if hasattr(self.app_instance, 'show_incoming_call_ui'):
+                self.app_instance.show_incoming_call_ui(contact_name, number)
+            else:
+                self.app_instance.update_current_screen_status(
+                    f"{display_text} («Алло» / «Сброс»)",
+                    color=(1.0, 0.5, 0.2, 1)
+                )
 
             # 2. Озвучиваем голосом входящий вызов
             speech_phrase = f"Входящий вызов от абонента {contact_name}"
             self.speak_text(speech_phrase)
 
-
         elif state == "idle":
+            self.is_incoming_active = False
             print("[TELEPHONY EVENT] Вызов завершен / сброшен")
-            self.app_instance.update_current_screen_status(
-                "Ассистент: Ожидание",
-                color=(0.6, 0.6, 0.6, 1)
-            )
-            # Сбрасываем флаги ожидания целей звонка
+
+            if hasattr(self.app_instance, 'hide_incoming_call_ui'):
+                self.app_instance.hide_incoming_call_ui()
+            else:
+                self.app_instance.update_current_screen_status(
+                    "Ассистент: Ожидание",
+                    color=(0.6, 0.6, 0.6, 1)
+                )
+
             self.is_waiting_for_call_target = False
 
     def get_phone_number_by_name(self, name_query):
@@ -5602,6 +5664,7 @@ class PhoneAssistantManager:
     def answer_incoming_call(self):
         """Ответ на входящий вызов"""
         print("[TELEPHONY] Ответ на входящий вызов...")
+        self.is_incoming_active = False
         if platform == 'android':
             try:
                 context = PythonActivity.mActivity
@@ -5619,6 +5682,7 @@ class PhoneAssistantManager:
     def reject_incoming_call(self):
         """Сброс входящего вызова"""
         print("[TELEPHONY] Сброс входящего вызова...")
+        self.is_incoming_active = False
         if platform == 'android':
             try:
                 context = PythonActivity.mActivity
@@ -5670,6 +5734,83 @@ class PhoneAssistantManager:
             tts.speak(text)
         except Exception as e:
             print(f"[TTS ERROR]: {e}")
+
+
+
+# Класс кликабельной картинки-кнопки (положите его в начало файла рядом с другими классами)
+class ImageButton(ButtonBehavior, Image):
+    pass
+
+
+def show_incoming_call_ui(self, contact_name, number):
+    # Закрываем старое окно, если оно уже висело
+    self.hide_incoming_call_ui()
+
+    # Основной контейнер с отступами
+    content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
+
+    # Рисуем полупрозрачный темный закругленный фон внутри попапа
+    with content.canvas.before:
+        Color(0.12, 0.12, 0.12, 0.9)  # Темный стильный фон с легкой прозрачностью
+        self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
+    content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
+                 size=lambda *x: setattr(self.bg_rect, 'size', content.size))
+
+    # Текст с информацией о звонящем
+    lbl = Label(
+        text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
+        markup=True,
+        font_size=sp(20),
+        color=(1, 1, 1, 1),
+        halign='center',
+        valign='middle'
+    )
+    lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
+    content.add_widget(lbl)
+
+    # Блок для ваших красивых круглых кнопок
+    btn_layout = BoxLayout(
+        orientation='horizontal',
+        size_hint_y=None,
+        height=dp(75),
+        spacing=dp(40)
+    )
+    btn_layout.padding = [dp(60), 0, dp(60), 0]  # Центрируем кнопки по горизонтали
+
+    # Зеленая кнопка ответа («Алло») с иконкой green.png
+    accept_btn = ImageButton(
+        source='green.png',
+        size_hint=(None, None),
+        size=(dp(70), dp(70))
+    )
+    accept_btn.bind(on_release=lambda x: [self.telephony.answer_incoming_call(), self.hide_incoming_call_ui()])
+
+    # Красная кнопка сброса («Сброс») с иконкой red.png
+    reject_btn = ImageButton(
+        source='red.png',
+        size_hint=(None, None),
+        size=(dp(70), dp(70))
+    )
+    reject_btn.bind(on_release=lambda x: [self.telephony.reject_incoming_call(), self.hide_incoming_call_ui()])
+
+    btn_layout.add_widget(accept_btn)
+    btn_layout.add_widget(reject_btn)
+    content.add_widget(btn_layout)
+
+    # Сам Popup с прозрачной стандартной рамкой
+    self.incoming_popup = Popup(
+        title='',  # Убираем стандартный заголовок, так как у нас красивый текст внутри
+        content=content,
+        size_hint=(0.85, 0.42),
+        auto_dismiss=False,
+        separator_height=0,
+        background=''  # Убирает стандартный дефолтный фон Kivy
+    )
+
+    # Легкое затемнение фона вокруг всплывающего окна
+    self.incoming_popup.background_color = (0, 0, 0, 0.6)
+
+    self.incoming_popup.open()
 
 class SmartApp(App):
     def __init__(self, **kwargs):
@@ -5724,6 +5865,81 @@ class SmartApp(App):
         sm.add_widget(AICameraScreen(name='ai_camera'))
         sm.add_widget(PhoneSettingsScreen(name='phone_settings'))
         return sm
+
+    def show_incoming_call_ui(self, contact_name, number):
+        # Закрываем старое окно, если оно уже висело
+        self.hide_incoming_call_ui()
+
+        # Основной контейнер с отступами
+        content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
+
+        # Рисуем полупрозрачный темный закругленный фон внутри попапа
+        with content.canvas.before:
+            Color(0.12, 0.12, 0.12, 0.9)  # Темный стильный фон с легкой прозрачностью
+            self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
+        content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
+                     size=lambda *x: setattr(self.bg_rect, 'size', content.size))
+
+        # Текст с информацией о звонящем
+        lbl = Label(
+            text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
+            markup=True,
+            font_size=sp(20),
+            color=(1, 1, 1, 1),
+            halign='center',
+            valign='middle'
+        )
+        lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
+        content.add_widget(lbl)
+
+        # Блок для ваших круглых кнопок
+        btn_layout = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height=dp(75),
+            spacing=dp(40)
+        )
+        btn_layout.padding = [dp(60), 0, dp(60), 0]  # Центрируем кнопки по горизонтали
+
+        # Зеленая кнопка ответа («Алло») с иконкой green.png
+        accept_btn = ImageButton(
+            source='green.png',
+            size_hint=(None, None),
+            size=(dp(70), dp(70))
+        )
+        accept_btn.bind(on_release=lambda x: [self.telephony.answer_incoming_call(), self.hide_incoming_call_ui()])
+
+        # Красная кнопка сброса («Сброс») с иконкой red.png
+        reject_btn = ImageButton(
+            source='red.png',
+            size_hint=(None, None),
+            size=(dp(70), dp(70))
+        )
+        reject_btn.bind(on_release=lambda x: [self.telephony.reject_incoming_call(), self.hide_incoming_call_ui()])
+
+        btn_layout.add_widget(accept_btn)
+        btn_layout.add_widget(reject_btn)
+        content.add_widget(btn_layout)
+
+        # Сам Popup с прозрачной стандартной рамкой
+        self.incoming_popup = Popup(
+            title='',  # Убираем стандартный заголовок
+            content=content,
+            size_hint=(0.85, 0.42),
+            auto_dismiss=False,
+            separator_height=0,
+            background=''  # Убирает стандартный дефолтный фон Kivy
+        )
+
+        # Легкое затемнение фона вокруг всплывающего окна
+        self.incoming_popup.background_color = (0, 0, 0, 0.6)
+
+        self.incoming_popup.open()
+
+    def hide_incoming_call_ui(self):
+        if hasattr(self, 'incoming_popup') and self.incoming_popup:
+            self.incoming_popup.dismiss()
+            self.incoming_popup = None
 
     def handle_user_query(self, query):
         # Показываем статус "Думаю..." через метод моста
