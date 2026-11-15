@@ -458,6 +458,33 @@ def save_config(config_data):
         json.dump(config_data, f, ensure_ascii=False, indent=4)
 
 
+# 2. Затем вспомогательные функции (включая set_visible)
+def set_visible(widget, is_visible):
+    """
+    Аналог свойства Visible из MIT App Inventor для Kivy.
+    """
+    if not hasattr(widget, '_saved_size_hint'):
+        widget._saved_size_hint = list(widget.size_hint) if widget.size_hint else [None, None]
+        widget._saved_size = list(widget.size) if widget.size else [100, 50]
+
+    if is_visible:
+        widget.size_hint = widget._saved_size_hint
+        widget.size = widget._saved_size
+        widget.opacity = 1
+        widget.disabled = False
+    else:
+        if widget.size_hint[0] is not None:
+            widget._saved_size_hint[0] = widget.size_hint[0]
+        if widget.size_hint[1] is not None:
+            widget._saved_size_hint[1] = widget.size_hint[1]
+
+        widget.size_hint_y = None
+        widget.height = 0
+        widget.opacity = 0
+        widget.disabled = True
+
+
+
 class FixedButton(Button):
     def __init__(self, bg_color=(0.2, 0.25, 0.35, 1), **kwargs):
         super().__init__(**kwargs)
@@ -3121,16 +3148,18 @@ class MainHubScreen(BaseScreen):
         # 3. Основной блок (Заголовок и кнопки режимов)
         content_box = BoxLayout(
             orientation='vertical',
-            spacing=15,
+            spacing=dp(15),
             size_hint=(None, None),
             width=dp(320),
-            height=dp(200),
-            pos_hint={'center_x': 0.5, 'top': 0.56}  # Вернули привязку по top, аккурат под кнопкой сброса
+            pos_hint={'center_x': 0.5, 'top': 0.52}
         )
+        # Автоматическая высота под все видимые элементы
+        content_box.bind(minimum_height=content_box.setter('height'))
+
         # Заголовок
         content_box.add_widget(Label(
             text="Голосовой помощник",
-            font_size=sp(22),  # Вместо 22
+            font_size=sp(22),
             bold=True,
             color=(0.95, 0.95, 0.95, 1),
             size_hint_y=None,
@@ -3140,7 +3169,7 @@ class MainHubScreen(BaseScreen):
         # Кнопка Умный дом
         btn_smarthome = FixedButton(
             text="Умный дом и Голос",
-            font_size=sp(16),  # Вместо 16 (но через sp(16))
+            font_size=sp(16),
             bg_color=(0.18, 0.35, 0.6, 1),
             size_hint_y=None,
             height=dp(50)
@@ -3151,7 +3180,7 @@ class MainHubScreen(BaseScreen):
         # Кнопка ИИ Камера
         btn_camera = FixedButton(
             text="ИИ Камера",
-            font_size=sp(16),  # Вместо 16 (но через sp(16))
+            font_size=sp(16),
             bg_color=(0.35, 0.2, 0.5, 1),
             size_hint_y=None,
             height=dp(50)
@@ -3163,21 +3192,20 @@ class MainHubScreen(BaseScreen):
         btn_phone = FixedButton(
             text="Телефон",
             font_size=sp(16),
-            bg_color=(0.18, 0.45, 0.25, 1),  # Приятный зеленый оттенок для связи
+            bg_color=(0.18, 0.45, 0.25, 1),
             size_hint_y=None,
             height=dp(50)
         )
         btn_phone.bind(on_press=lambda x: setattr(self.manager, 'current', 'phone_settings'))
         content_box.add_widget(btn_phone)
 
-        # ТЕСТОВАЯ КНОПКА (скрытая)
+        # ТЕСТОВАЯ КНОПКА (теперь полностью скрыта и не занимает место)
         test_btn = Button(
             text="Тест звонка",
             size_hint=(None, None),
-            size=(dp(120), dp(50)),
-            pos_hint={'center_x': 0.5},
-            opacity=0,  # Делает кнопку полностью прозрачной (невидимой)
-            disabled=True  # Отключает нажатия на нее
+            size=(dp(120), dp(0)),  # Высота 0 — места не занимает!
+            opacity=0,  # Прозрачная
+            disabled=True  # Отключена
         )
         test_btn.bind(
             on_release=lambda x: App.get_running_app().show_incoming_call_ui("Иван Тест", "+7 (900) 555-35-35"))
