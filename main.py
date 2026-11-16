@@ -169,9 +169,34 @@ if platform == 'android':
                         self.callback("idle", None)
 
 
-    # 3. РЕГИСТРАЦИЯ РЕСИВЕРА В СИСТЕМЕ (ЭТОГО У ВАС НЕ ХВАТАЛО)
-    try:
+    # Вспомогательная функция поиска имени контакта по номеру телефона
+    def get_contact_name_for_receiver(phone_number):
+        if not phone_number:
+            return "Неизвестный номер"
+        try:
+            Uri = autoclass('android.net.Uri')
+            ContactsContract = autoclass('android.provider.ContactsContract$PhoneLookup')
+            context = PythonActivity.mActivity
+            content_resolver = context.getContentResolver()
 
+            uri = Uri.withAppendedPath(ContactsContract.CONTENT_FILTER_URI, Uri.encode(phone_number))
+            projection = [ContactsContract.DISPLAY_NAME]
+
+            cursor = content_resolver.query(uri, projection, None, None, None)
+            if cursor and cursor.moveToFirst():
+                name_idx = cursor.getColumnIndex(ContactsContract.DISPLAY_NAME)
+                contact_name = cursor.getString(name_idx)
+                cursor.close()
+                return contact_name
+            if cursor:
+                cursor.close()
+        except Exception as e:
+            print(f"[CONTACTS LOOKUP ERROR]: {e}")
+        return phone_number
+
+
+    # 3. РЕГИСТРАЦИЯ РЕСИВЕРА В СИСТЕМЕ
+    try:
         def handle_phone_state(state, number):
             app = App.get_running_app()
             if not app:
@@ -179,14 +204,18 @@ if platform == 'android':
 
             if state == "ringing":
                 display_number = number if number else "Неизвестный номер"
-                print(f"[UI TRIGGER] Входящий от: {display_number}")
-                Clock.schedule_once(lambda dt: app.show_incoming_call_ui("Входящий вызов", display_number))
+                # Ищем имя в контактах телефона по номеру
+                contact_name = get_contact_name_for_receiver(display_number)
+                print(f"[UI TRIGGER] Входящий от: {contact_name} ({display_number})")
+
+                # Передаем и имя, и номер в интерфейс
+                Clock.schedule_once(lambda dt: app.show_incoming_call_ui(contact_name, display_number))
 
             elif state == "idle":
                 Clock.schedule_once(lambda dt: app.hide_incoming_call_ui())
 
 
-        # Создаем и регистрируем
+        # Создаем и регистрируем ресивер
         call_receiver = PhoneStateReceiver(handle_phone_state)
         intent_filter = IntentFilter()
         intent_filter.addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
@@ -736,9 +765,9 @@ class VoiceAssistant:
         # --- СЛОВАРЬ ФОНЕТИЧЕСКИХ КОРРЕКЦИЙ ДЛЯ TTS ---
         # Здесь можно прописывать слова, которые движок читает неправильно
         pronunciation_dict = {
-            r'\bкому\b': 'комý',  # Принудительное ударение на 'у' через спецсимвол
+            #r'\bкому\b': 'комý',  # Принудительное ударение на 'у' через спецсимвол
             # Или, если движок упорно коверкает «о», попробуйте вариант с ударением на 'у':
-            # r'\bкому\b': 'камý',
+            r'\bкому\b': 'камý',
         }
 
         for pattern, replacement in pronunciation_dict.items():
@@ -3216,17 +3245,22 @@ class MainHubScreen(BaseScreen):
         btn_phone.bind(on_press=lambda x: setattr(self.manager, 'current', 'phone_settings'))
         content_box.add_widget(btn_phone)
 
-        # ТЕСТОВАЯ КНОПКА (теперь полностью скрыта и не занимает место)
-        test_btn = Button(
-            text="Тест звонка",
-            size_hint=(None, None),
-            size=(dp(120), dp(0)),  # Высота 0 — места не занимает!
-            opacity=0,  # Прозрачная
-            disabled=True  # Отключена
-        )
-        test_btn.bind(
-            on_release=lambda x: App.get_running_app().show_incoming_call_ui("Иван Тест", "+7 (900) 555-35-35"))
-        content_box.add_widget(test_btn)
+        # ПОЛНОЦЕННАЯ ТЕСТОВАЯ КНОПКА (если нужна для проверки звонилки прямо с экрана)
+        # Установите в True для отладки (покажет кнопку теста), в False — для скрытия
+        DEBUG_MODE = False
+
+        if DEBUG_MODE:
+            test_call_btn = FixedButton(
+                text="Тест звонка (Вызов)",
+                font_size=sp(15),
+                bg_color=(0.5, 0.2, 0.2, 1),
+                size_hint_y=None,
+                height=dp(45)
+            )
+            test_call_btn.bind(
+                on_release=lambda x: App.get_running_app().show_incoming_call_ui("Иван Тест", "+7 (900) 555-35-35")
+            )
+            content_box.add_widget(test_call_btn)
 
         root_layout.add_widget(content_box)
         self.add_widget(root_layout)
@@ -5616,7 +5650,7 @@ class PhoneAssistantManager:
             display_text = f"Входящий вызов: {contact_name}"
             print(f"[TELEPHONY EVENT] {display_text}")
 
-            # 1. Меняем статус на экране (или вызываем мини-звонилку)
+            # 1. Показываем наш кастомный экран входящего вызова
             if hasattr(self.app_instance, 'show_incoming_call_ui'):
                 self.app_instance.show_incoming_call_ui(contact_name, number)
             else:
@@ -5625,7 +5659,7 @@ class PhoneAssistantManager:
                     color=(1.0, 0.5, 0.2, 1)
                 )
 
-            # 2. Озвучиваем голосом входящий вызов
+            # 2. Озвучиваем голосом входящий вызов (с очисткой TTS)
             speech_phrase = f"Входящий вызов от абонента {contact_name}"
             self.speak_text(speech_phrase)
 
@@ -5683,26 +5717,39 @@ class PhoneAssistantManager:
         return phone_number
 
     def execute_outgoing_call(self, query_target):
-        """Инициация исходящего звонка через ACTION_DIAL с поиском в контактах"""
+        """Исходящий вызов в фоновом режиме (ACTION_CALL) без свертывания приложения + наш UI"""
         phone_number = self.get_phone_number_by_name(query_target)
-        print(f"[TELEPHONY] Запуск звонка на: {phone_number}")
+        contact_name = self.get_contact_name_by_number(phone_number)
 
+        if not contact_name or contact_name == phone_number:
+            contact_name = query_target
+
+        print(f"[TELEPHONY] Запуск исходящего вызова на: {contact_name} ({phone_number})")
+
+        # 1. Показываем наш собственный интерфейс исходящего звонка внутри приложения
+        if self.app_instance and hasattr(self.app_instance, 'show_outgoing_call_ui'):
+            self.app_instance.show_outgoing_call_ui(contact_name, phone_number)
+
+        # 2. Озвучиваем голосом
+        self.speak_text(f"Звоню абоненту {contact_name}")
+
+        # 3. Запускаем тихий вызов в фоне через ACTION_CALL (требует CALL_PHONE)
         if platform == 'android':
             try:
                 Intent = autoclass('android.content.Intent')
                 Uri = autoclass('android.net.Uri')
 
                 context = PythonActivity.mActivity
-                intent = Intent(Intent.ACTION_DIAL)
+                intent = Intent(Intent.ACTION_CALL)
                 intent.setData(Uri.parse(f"tel:{phone_number}"))
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
                 context.startActivity(intent)
-                print(f"[CALL SUCCESS] ACTION_DIAL открыт для {phone_number}")
+                print(f"[CALL SUCCESS] ACTION_CALL запущен для {phone_number}")
             except Exception as e:
-                print(f"[CALL ERROR]: {e}")
+                print(f"[CALL ERROR (Убедитесь, что выдано разрешение CALL_PHONE)]: {e}")
         else:
-            print(f"[PC SIMULATION] Имитация звонка на: {phone_number}")
+            print(f"[PC SIMULATION] Имитация исходящего звонка на: {phone_number}")
 
     def answer_incoming_call(self):
         """Ответ на входящий вызов"""
@@ -5772,11 +5819,13 @@ class PhoneAssistantManager:
         return phone_number
 
     def speak_text(self, text):
-        """Озвучка текста с помощью plyer.tts"""
-        print(f"[TELEPHONY SPEECH]: {text}")
+        """Озвучка текста с помощью plyer.tts с предварительной очисткой и ударениями"""
+        # Очищаем текст и исправляем ударения (например, «кому» -> «комý») через метод приложения
+        cleaned_text = self.app_instance.clean_text_for_tts(text) if self.app_instance else text
+        print(f"[TELEPHONY SPEECH]: {cleaned_text}")
         try:
             from plyer import tts
-            tts.speak(text)
+            tts.speak(cleaned_text)
         except Exception as e:
             print(f"[TTS ERROR]: {e}")
 
@@ -5789,8 +5838,7 @@ class ImageButton(ButtonBehavior, Image):
 
 def show_incoming_call_ui(self, contact_name, number):
     # Закрываем старое окно, если оно уже висело
-    if hasattr(self, 'hide_incoming_call_ui'):
-        self.hide_incoming_call_ui()
+    self.hide_incoming_call_ui()
 
     # Основной контейнер с отступами
     content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
@@ -5802,8 +5850,8 @@ def show_incoming_call_ui(self, contact_name, number):
     content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
                  size=lambda *x: setattr(self.bg_rect, 'size', content.size))
 
-    # Текст с информацией о звонящем
-    lbl = Label(
+    # Текст с информацией о звонящем (сохраняем ссылку как self.call_status_lbl для таймера)
+    self.call_status_lbl = Label(
         text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
         markup=True,
         font_size=sp(20),
@@ -5811,8 +5859,8 @@ def show_incoming_call_ui(self, contact_name, number):
         halign='center',
         valign='middle'
     )
-    lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
-    content.add_widget(lbl)
+    self.call_status_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
+    content.add_widget(self.call_status_lbl)
 
     # Блок для круглых кнопок
     btn_layout = BoxLayout(
@@ -5823,21 +5871,28 @@ def show_incoming_call_ui(self, contact_name, number):
     )
     btn_layout.padding = [dp(60), 0, dp(60), 0]
 
-    # Зеленая кнопка ответа («Алло»)
+    # Зеленая кнопка ответа («Алло») -> принимает вызов и запускает таймер на экране
     accept_btn = ImageButton(
         source='green.png',
         size_hint=(None, None),
         size=(dp(70), dp(70))
     )
-    accept_btn.bind(on_release=lambda x: [self.telephony.answer_incoming_call(), self.hide_incoming_call_ui()])
+    accept_btn.bind(on_release=lambda x: [
+        self.telephony.answer_incoming_call(),
+        self.start_call_timer(self.call_status_lbl)
+    ])
 
-    # Красная кнопка сброса («Сброс»)
+    # Красная кнопка сброса («Сброс») -> останавливает таймер, сбрасывает вызов и закрывает окно
     reject_btn = ImageButton(
         source='red.png',
         size_hint=(None, None),
         size=(dp(70), dp(70))
     )
-    reject_btn.bind(on_release=lambda x: [self.telephony.reject_incoming_call(), self.hide_incoming_call_ui()])
+    reject_btn.bind(on_release=lambda x: [
+        self.stop_call_timer(),
+        self.telephony.reject_incoming_call(),
+        self.hide_incoming_call_ui()
+    ])
 
     btn_layout.add_widget(accept_btn)
     btn_layout.add_widget(reject_btn)
@@ -5908,7 +5963,33 @@ class SmartApp(App):
         sm.add_widget(SmartHomeScreen(name='smarthome'))
         sm.add_widget(AICameraScreen(name='ai_camera'))
         sm.add_widget(PhoneSettingsScreen(name='phone_settings'))
+
+        # Инициализируем менеджер телефонии и запускаем фоновый прослушиватель звонков
+        self.telephony = PhoneAssistantManager()
+        self.telephony.init_receiver(self)
+
         return sm
+
+    def start_call_timer(self, label_widget):
+        """Запускает секундомер длительности вызова"""
+        self.call_seconds = 0
+        self.timer_label_ref = label_widget
+
+        def update_timer(dt):
+            self.call_seconds += 1
+            mins = self.call_seconds // 60
+            secs = self.call_seconds % 60
+            if self.timer_label_ref and hasattr(self.timer_label_ref, 'text'):
+                self.timer_label_ref.text = f"[b]Соединение установлено[/b]\n{mins:02d}:{secs:02d}"
+
+        self.timer_event = Clock.schedule_interval(update_timer, 1)
+
+    def stop_call_timer(self):
+        """Останавливает секундомер вызова"""
+        if hasattr(self, 'timer_event') and self.timer_event:
+            self.timer_event.cancel()
+            self.timer_event = None
+        self.timer_label_ref = None
 
     def show_incoming_call_ui(self, contact_name, number):
         # Закрываем старое окно, если оно уже висело
@@ -5918,14 +5999,15 @@ class SmartApp(App):
         content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
 
         # Рисуем полупрозрачный темный закругленный фон внутри попапа
+        from kivy.graphics import Color, RoundedRectangle
         with content.canvas.before:
-            Color(0.12, 0.12, 0.12, 0.9)  # Темный стильный фон с легкой прозрачностью
+            Color(0.12, 0.12, 0.12, 0.9)
             self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
         content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
                      size=lambda *x: setattr(self.bg_rect, 'size', content.size))
 
-        # Текст с информацией о звонящем
-        lbl = Label(
+        # Текст с информацией о звонящем (сохраняем ссылку для таймера)
+        self.call_status_lbl = Label(
             text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
             markup=True,
             font_size=sp(20),
@@ -5933,56 +6015,123 @@ class SmartApp(App):
             halign='center',
             valign='middle'
         )
-        lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
-        content.add_widget(lbl)
+        self.call_status_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
+        content.add_widget(self.call_status_lbl)
 
-        # Блок для ваших круглых кнопок
+        # Блок для круглых кнопок
         btn_layout = BoxLayout(
             orientation='horizontal',
             size_hint_y=None,
             height=dp(75),
             spacing=dp(40)
         )
-        btn_layout.padding = [dp(60), 0, dp(60), 0]  # Центрируем кнопки по горизонтали
+        btn_layout.padding = [dp(60), 0, dp(60), 0]
 
-        # Зеленая кнопка ответа («Алло») с иконкой green.png
+        # Зеленая кнопка ответа («Алло») -> принимает вызов и запускает таймер
         accept_btn = ImageButton(
             source='green.png',
             size_hint=(None, None),
             size=(dp(70), dp(70))
         )
-        accept_btn.bind(on_release=lambda x: [self.telephony.answer_incoming_call(), self.hide_incoming_call_ui()])
+        accept_btn.bind(on_release=lambda x: [
+            self.telephony.answer_incoming_call(),
+            self.start_call_timer(self.call_status_lbl)
+        ])
 
-        # Красная кнопка сброса («Сброс») с иконкой red.png
+        # Красная кнопка сброса («Сброс») -> останавливает таймер, сбрасывает и закрывает окно
         reject_btn = ImageButton(
             source='red.png',
             size_hint=(None, None),
             size=(dp(70), dp(70))
         )
-        reject_btn.bind(on_release=lambda x: [self.telephony.reject_incoming_call(), self.hide_incoming_call_ui()])
+        reject_btn.bind(on_release=lambda x: [
+            self.stop_call_timer(),
+            self.telephony.reject_incoming_call(),
+            self.hide_incoming_call_ui()
+        ])
 
         btn_layout.add_widget(accept_btn)
         btn_layout.add_widget(reject_btn)
         content.add_widget(btn_layout)
 
-        # Сам Popup с прозрачной стандартной рамкой
+        # Сам Popup
         self.incoming_popup = Popup(
-            title='',  # Убираем стандартный заголовок
+            title='',
             content=content,
             size_hint=(0.85, 0.42),
             auto_dismiss=False,
             separator_height=0,
-            background=''  # Убирает стандартный дефолтный фон Kivy
+            background=''
         )
-
-        # Легкое затемнение фона вокруг всплывающего окна
         self.incoming_popup.background_color = (0, 0, 0, 0.6)
-
         self.incoming_popup.open()
 
+    def show_outgoing_call_ui(self, contact_name, number):
+        """Окно исходящего вызова внутри приложения (без ухода в системную звонилку)"""
+        self.hide_incoming_call_ui()
+        content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
+
+        from kivy.graphics import Color, RoundedRectangle
+        with content.canvas.before:
+            Color(0.12, 0.12, 0.12, 0.95)
+            self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
+        content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
+                     size=lambda *x: setattr(self.bg_rect, 'size', content.size))
+
+        self.call_status_lbl = Label(
+            text=f"[b]Исходящий вызов[/b]\n{contact_name}\n{number}",
+            markup=True,
+            font_size=sp(20),
+            color=(1, 1, 1, 1),
+            halign='center',
+            valign='middle'
+        )
+        self.call_status_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
+        content.add_widget(self.call_status_lbl)
+
+        btn_layout = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height=dp(75),
+            spacing=dp(40)
+        )
+        btn_layout.padding = [dp(110), 0, dp(110), 0]
+
+        reject_btn = ImageButton(
+            source='red.png',
+            size_hint=(None, None),
+            size=(dp(70), dp(70))
+        )
+        reject_btn.bind(on_release=lambda x: [
+            self.stop_call_timer(),
+            self.telephony.reject_incoming_call(),
+            self.hide_incoming_call_ui()
+        ])
+
+        btn_layout.add_widget(reject_btn)
+        content.add_widget(btn_layout)
+
+        self.incoming_popup = Popup(
+            title='',
+            content=content,
+            size_hint=(0.85, 0.42),
+            auto_dismiss=False,
+            separator_height=0,
+            background=''
+        )
+        self.incoming_popup.background_color = (0, 0, 0, 0.6)
+        self.incoming_popup.open()
+
+        # Автоматически запускаем таймер на исходящем вызове
+        self.start_call_timer(self.call_status_lbl)
+
     def hide_incoming_call_ui(self):
+        self.stop_call_timer()
         if hasattr(self, 'incoming_popup') and self.incoming_popup:
-            self.incoming_popup.dismiss()
+            try:
+                self.incoming_popup.dismiss()
+            except Exception as e:
+                print(f"[POPUP ERROR]: {e}")
             self.incoming_popup = None
 
     def handle_user_query(self, query):
