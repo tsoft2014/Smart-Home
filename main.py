@@ -100,30 +100,16 @@ AudioRecord = AudioSource = AudioFormat = None
 AudioManager = AudioTrack = None
 autoclass = None
 
-if platform == "android":
-    try:
-        from jnius import autoclass
-
-        AudioRecord = autoclass("android.media.AudioRecord")
-        AudioSource = autoclass("android.media.MediaRecorder$AudioSource")
-        AudioFormat = autoclass("android.media.AudioFormat")
-        AudioManager = autoclass("android.media.AudioManager")
-        AudioTrack = autoclass("android.media.AudioTrack")
-
-        HAS_ANDROID_AUDIO = True
-    except Exception as e:
-        print(f"[ANDROID AUDIO INIT ERROR]: {e}")
-
-# Проверка платформы Android и разрешений
+# 1. Единый блок инициализации Android-аудио и разрешений
 if platform == 'android':
     try:
         from android.permissions import request_permissions, Permission
+
         request_permissions([
             Permission.RECORD_AUDIO,
             Permission.CAMERA,
             Permission.WRITE_EXTERNAL_STORAGE,
             Permission.READ_EXTERNAL_STORAGE,
-            # --- РАЗРЕШЕНИЯ ДЛЯ ТЕЛЕФОНИИ И КОНТАКТОВ ---
             Permission.READ_CONTACTS,
             Permission.READ_PHONE_STATE,
             Permission.CALL_PHONE
@@ -133,17 +119,20 @@ if platform == 'android':
 
     try:
         from jnius import autoclass, java_method, PythonJavaClass
+
         AudioRecord = autoclass('android.media.AudioRecord')
         AudioSource = autoclass('android.media.MediaRecorder$AudioSource')
         AudioFormat = autoclass('android.media.AudioFormat')
+        AudioManager = autoclass('android.media.AudioManager')
+        AudioTrack = autoclass('android.media.AudioTrack')
         HAS_ANDROID_AUDIO = True
     except Exception as e:
-        print(f"[ANDROID JNIUS AUDIO INIT ERROR]: {e}")
+        print(f"[ANDROID AUDIO INIT ERROR]: {e}")
         HAS_ANDROID_AUDIO = False
 else:
     HAS_ANDROID_AUDIO = False
 
-# Условный кроссплатформенный блок для BroadcastReceiver
+# 2. Блок BroadcastReceiver для перехвата входящих вызовов
 if platform == 'android':
     from jnius import autoclass, java_method, PythonJavaClass
 
@@ -152,6 +141,7 @@ if platform == 'android':
     IntentFilter = autoclass('android.content.IntentFilter')
     TelephonyManager = autoclass('android.telephony.TelephonyManager')
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
 
     class PhoneStateReceiver(PythonJavaClass):
         __javainterfaces__ = ['android/content/BroadcastReceiver']
@@ -177,16 +167,42 @@ if platform == 'android':
                     print("[PHONE RECEIVER] Вызов завершен")
                     if self.callback:
                         self.callback("idle", None)
+
+
+    # 3. РЕГИСТРАЦИЯ РЕСИВЕРА В СИСТЕМЕ (ЭТОГО У ВАС НЕ ХВАТАЛО)
+    try:
+
+        def handle_phone_state(state, number):
+            app = App.get_running_app()
+            if not app:
+                return
+
+            if state == "ringing":
+                display_number = number if number else "Неизвестный номер"
+                print(f"[UI TRIGGER] Входящий от: {display_number}")
+                Clock.schedule_once(lambda dt: app.show_incoming_call_ui("Входящий вызов", display_number))
+
+            elif state == "idle":
+                Clock.schedule_once(lambda dt: app.hide_incoming_call_ui())
+
+
+        # Создаем и регистрируем
+        call_receiver = PhoneStateReceiver(handle_phone_state)
+        intent_filter = IntentFilter()
+        intent_filter.addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
+
+        activity = PythonActivity.mActivity
+        activity.registerReceiver(call_receiver, intent_filter)
+        print("[PHONE RECEIVER] Успешно зарегистрирован в системе!")
+
+    except Exception as e:
+        print(f"[PHONE RECEIVER REGISTRATION ERROR]: {e}")
+
 else:
     # Заглушка для отладки на ПК без падений NameError
     class PhoneStateReceiver:
         def __init__(self, callback):
             self.callback = callback
-
-if platform == 'android':
-    from jnius import autoclass
-    PythonActivity = autoclass('org.kivy.android.PythonActivity')
-    Context = autoclass('android.content.Context')
 
 # Безопасный импорт sounddevice только для ПК
 HAS_SOUNDDEVICE = False
@@ -720,8 +736,9 @@ class VoiceAssistant:
         # --- СЛОВАРЬ ФОНЕТИЧЕСКИХ КОРРЕКЦИЙ ДЛЯ TTS ---
         # Здесь можно прописывать слова, которые движок читает неправильно
         pronunciation_dict = {
-            r'\bкому\b': 'каму',  # Пример точного исправления ударения/произношения
-            # r'\bдругое_слово\b': 'как_нужно_читать',
+            r'\bкому\b': 'комý',  # Принудительное ударение на 'у' через спецсимвол
+            # Или, если движок упорно коверкает «о», попробуйте вариант с ударением на 'у':
+            # r'\bкому\b': 'камý',
         }
 
         for pattern, replacement in pronunciation_dict.items():
@@ -5593,8 +5610,6 @@ class PhoneAssistantManager:
         if not self.app_instance:
             return
 
-        config = getattr(self.app_instance, 'config_data', {})
-
         if state == "ringing":
             self.is_incoming_active = True
             contact_name = self.get_contact_name_by_number(number)
@@ -5695,6 +5710,7 @@ class PhoneAssistantManager:
         self.is_incoming_active = False
         if platform == 'android':
             try:
+                Context = autoclass('android.content.Context')
                 context = PythonActivity.mActivity
                 telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
                 if telecom_manager and hasattr(telecom_manager, 'acceptRingingCall'):
@@ -5713,6 +5729,7 @@ class PhoneAssistantManager:
         self.is_incoming_active = False
         if platform == 'android':
             try:
+                Context = autoclass('android.content.Context')
                 context = PythonActivity.mActivity
                 telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
                 if telecom_manager and hasattr(telecom_manager, 'endCall'):
@@ -5765,21 +5782,22 @@ class PhoneAssistantManager:
 
 
 
-# Класс кликабельной картинки-кнопки (положите его в начало файла рядом с другими классами)
+# Класс кликабельной картинки-кнопки
 class ImageButton(ButtonBehavior, Image):
     pass
 
 
 def show_incoming_call_ui(self, contact_name, number):
     # Закрываем старое окно, если оно уже висело
-    self.hide_incoming_call_ui()
+    if hasattr(self, 'hide_incoming_call_ui'):
+        self.hide_incoming_call_ui()
 
     # Основной контейнер с отступами
     content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
 
     # Рисуем полупрозрачный темный закругленный фон внутри попапа
     with content.canvas.before:
-        Color(0.12, 0.12, 0.12, 0.9)  # Темный стильный фон с легкой прозрачностью
+        Color(0.12, 0.12, 0.12, 0.9)
         self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
     content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
                  size=lambda *x: setattr(self.bg_rect, 'size', content.size))
@@ -5796,16 +5814,16 @@ def show_incoming_call_ui(self, contact_name, number):
     lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
     content.add_widget(lbl)
 
-    # Блок для ваших красивых круглых кнопок
+    # Блок для круглых кнопок
     btn_layout = BoxLayout(
         orientation='horizontal',
         size_hint_y=None,
         height=dp(75),
         spacing=dp(40)
     )
-    btn_layout.padding = [dp(60), 0, dp(60), 0]  # Центрируем кнопки по горизонтали
+    btn_layout.padding = [dp(60), 0, dp(60), 0]
 
-    # Зеленая кнопка ответа («Алло») с иконкой green.png
+    # Зеленая кнопка ответа («Алло»)
     accept_btn = ImageButton(
         source='green.png',
         size_hint=(None, None),
@@ -5813,7 +5831,7 @@ def show_incoming_call_ui(self, contact_name, number):
     )
     accept_btn.bind(on_release=lambda x: [self.telephony.answer_incoming_call(), self.hide_incoming_call_ui()])
 
-    # Красная кнопка сброса («Сброс») с иконкой red.png
+    # Красная кнопка сброса («Сброс»)
     reject_btn = ImageButton(
         source='red.png',
         size_hint=(None, None),
@@ -5825,19 +5843,17 @@ def show_incoming_call_ui(self, contact_name, number):
     btn_layout.add_widget(reject_btn)
     content.add_widget(btn_layout)
 
-    # Сам Popup с прозрачной стандартной рамкой
+    # Сам Popup
     self.incoming_popup = Popup(
-        title='',  # Убираем стандартный заголовок, так как у нас красивый текст внутри
+        title='',
         content=content,
         size_hint=(0.85, 0.42),
         auto_dismiss=False,
         separator_height=0,
-        background=''  # Убирает стандартный дефолтный фон Kivy
+        background=''
     )
 
-    # Легкое затемнение фона вокруг всплывающего окна
     self.incoming_popup.background_color = (0, 0, 0, 0.6)
-
     self.incoming_popup.open()
 
 class SmartApp(App):
