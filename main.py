@@ -118,7 +118,7 @@ if platform == 'android':
         print(f"[ANDROID PERMISSIONS ERROR]: {e}")
 
     try:
-        from jnius import autoclass, java_method, PythonJavaClass
+        from jnius import autoclass
 
         AudioRecord = autoclass('android.media.AudioRecord')
         AudioSource = autoclass('android.media.MediaRecorder$AudioSource')
@@ -132,17 +132,17 @@ if platform == 'android':
 else:
     HAS_ANDROID_AUDIO = False
 
-# 2. Блок BroadcastReceiver для перехвата входящих вызовов
 if platform == 'android':
     from jnius import autoclass, java_method, PythonJavaClass
-
     Context = autoclass('android.content.Context')
     Intent = autoclass('android.content.Intent')
     IntentFilter = autoclass('android.content.IntentFilter')
     TelephonyManager = autoclass('android.telephony.TelephonyManager')
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    Uri = autoclass('android.net.Uri')
+    KeyEvent = autoclass('android.view.KeyEvent')
 
-
+    # Нативный Java-ресивер для отслеживания звонков
     class PhoneStateReceiver(PythonJavaClass):
         __javainterfaces__ = ['android/content/BroadcastReceiver']
         __javachain__ = ['java/lang/Object']
@@ -156,79 +156,14 @@ if platform == 'android':
             action = intent.getAction()
             if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
                 state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
-
                 if state == TelephonyManager.EXTRA_STATE_RINGING:
                     incoming_number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
-                    print(f"[PHONE RECEIVER] Входящий вызов! Номер: {incoming_number}")
                     if self.callback:
                         self.callback("ringing", incoming_number)
-
                 elif state == TelephonyManager.EXTRA_STATE_IDLE:
-                    print("[PHONE RECEIVER] Вызов завершен")
                     if self.callback:
                         self.callback("idle", None)
-
-
-    # Вспомогательная функция поиска имени контакта по номеру телефона
-    def get_contact_name_for_receiver(phone_number):
-        if not phone_number:
-            return "Неизвестный номер"
-        try:
-            Uri = autoclass('android.net.Uri')
-            ContactsContract = autoclass('android.provider.ContactsContract$PhoneLookup')
-            context = PythonActivity.mActivity
-            content_resolver = context.getContentResolver()
-
-            uri = Uri.withAppendedPath(ContactsContract.CONTENT_FILTER_URI, Uri.encode(phone_number))
-            projection = [ContactsContract.DISPLAY_NAME]
-
-            cursor = content_resolver.query(uri, projection, None, None, None)
-            if cursor and cursor.moveToFirst():
-                name_idx = cursor.getColumnIndex(ContactsContract.DISPLAY_NAME)
-                contact_name = cursor.getString(name_idx)
-                cursor.close()
-                return contact_name
-            if cursor:
-                cursor.close()
-        except Exception as e:
-            print(f"[CONTACTS LOOKUP ERROR]: {e}")
-        return phone_number
-
-
-    # 3. РЕГИСТРАЦИЯ РЕСИВЕРА В СИСТЕМЕ
-    try:
-        def handle_phone_state(state, number):
-            app = App.get_running_app()
-            if not app:
-                return
-
-            if state == "ringing":
-                display_number = number if number else "Неизвестный номер"
-                # Ищем имя в контактах телефона по номеру
-                contact_name = get_contact_name_for_receiver(display_number)
-                print(f"[UI TRIGGER] Входящий от: {contact_name} ({display_number})")
-
-                # Передаем и имя, и номер в интерфейс
-                Clock.schedule_once(lambda dt: app.show_incoming_call_ui(contact_name, display_number))
-
-            elif state == "idle":
-                Clock.schedule_once(lambda dt: app.hide_incoming_call_ui())
-
-
-        # Создаем и регистрируем ресивер
-        call_receiver = PhoneStateReceiver(handle_phone_state)
-        intent_filter = IntentFilter()
-        intent_filter.addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
-
-        activity = PythonActivity.mActivity
-        activity.registerReceiver(call_receiver, intent_filter)
-        print("[PHONE RECEIVER] Успешно зарегистрирован в системе!")
-
-    except Exception as e:
-        print(f"[PHONE RECEIVER REGISTRATION ERROR]: {e}")
-
 else:
-    # Заглушка для отладки на ПК без падений NameError
     class PhoneStateReceiver:
         def __init__(self, callback):
             self.callback = callback
@@ -4561,6 +4496,21 @@ class RoundCaptureButton(Button):
         self.inner_circle.pos = (self.x + padding, self.y + padding)
         self.inner_circle.size = (self.width - padding * 2, self.height - padding * 2)
 
+# Выносим вспомогательный класс за пределы попапа (в начало файла)
+# 1. Объявляем класс инпута снаружи, принимая callback-функцию
+class TapTextInput(TextInput):
+    def __init__(self, tap_callback=None, **kwargs):
+        super().__init__(**kwargs)
+        self.tap_callback = tap_callback
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos):
+            if self.tap_callback:
+                self.tap_callback(self)  # Безопасно вызываем переданную функцию
+            return True
+        return super().on_touch_down(touch)
+
+
 # Класс настроек ИИ-камеры, оформленный точно так же, как SystemSettingsPopup
 class AICameraSettingsPopup(Popup):
     def __init__(self, camera_screen_ref, **kwargs):
@@ -4707,7 +4657,6 @@ class AICameraSettingsPopup(Popup):
             input_widget.size_hint_x = 1.0
             block.add_widget(input_widget)
 
-            # Вычисляем высоту блока в зависимости от высоты инпута
             block.height = dp(22) + dp(4) + input_widget.height
             return block, input_widget
 
@@ -4717,7 +4666,7 @@ class AICameraSettingsPopup(Popup):
 
         content.add_widget(create_section_header("Параметры ИИ-камеры"))
 
-        # 1. Многострочный инпут для промпта
+        # 1. Многострочный инпут для промпта (без halign='center', так как он мультилинейный)
         prompt_input = TextInput(
             text=str(config.get('cam_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")),
             multiline=True,
@@ -4726,20 +4675,12 @@ class AICameraSettingsPopup(Popup):
             font_size=sp(13),
             background_color=(0.15, 0.17, 0.22, 1),
             foreground_color=(1, 1, 1, 1),
-            halign='center',
             padding=[dp(8), dp(10), dp(8), dp(8)]
         )
         block, self.inputs['cam_prompt'] = create_setting_block("Промпт (запрос) для Gemini Vision:", prompt_input)
         content.add_widget(block)
 
         # 2. Интерактивный инпут для ключевого слова с поддержкой тапа/голосового ввода
-        class TapTextInput(TextInput):
-            def on_touch_down(self, touch):
-                if self.collide_point(*touch.pos):
-                    start_voice_recording_for_input(self)
-                    return True
-                return super().on_touch_down(touch)
-
         wake_input = TapTextInput(
             text=str(config.get('wake_word_cam', "снимок")),
             multiline=False,
@@ -5356,19 +5297,6 @@ class AICameraScreen(BaseScreen):
 
 
 
-class TapTextInput(TextInput):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.tap_callback = None
-
-    def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
-            if self.tap_callback:
-                self.tap_callback(self)
-            return True
-        return super().on_touch_down(touch)
-
-
 class PhoneSettingsScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -5392,15 +5320,14 @@ class PhoneSettingsScreen(Screen):
             spacing=dp(10)
         )
 
-        btn_back = Button(
+        # Заменили на FixedButton для красивого стиля
+        btn_back = FixedButton(
             text="Назад",
-            background_normal='',
-            background_color=(0.2, 0.23, 0.3, 1),
+            bg_color=(0.2, 0.23, 0.3, 1),
             size_hint=(None, None),
             width=dp(80),
             height=dp(40),
-            font_size=sp(14),
-            color=(1, 1, 1, 1)
+            font_size=sp(14)
         )
         btn_back.bind(on_press=lambda x: setattr(self.manager, 'current', 'main'))
         top_bar.add_widget(btn_back)
@@ -5517,13 +5444,12 @@ class PhoneSettingsScreen(Screen):
         # Секция 1: Системные разрешения
         content.add_widget(create_section_header("Системные разрешения"))
 
-        btn_permission = Button(
+        # Заменили на FixedButton
+        btn_permission = FixedButton(
             text="Запросить разрешение на оверлей",
+            bg_color=(0.25, 0.35, 0.5, 1),
             size_hint=(1, None),
             height=dp(45),
-            background_normal='',
-            background_color=(0.25, 0.35, 0.5, 1),
-            color=(1, 1, 1, 1),
             font_size=sp(14)
         )
         btn_permission.bind(on_press=self.request_overlay_permission)
@@ -5550,17 +5476,15 @@ class PhoneSettingsScreen(Screen):
         self.input_cancel_word = create_voice_input(config_data.get("wake_word_call_cancel", "отмена"))
         content.add_widget(create_setting_block("Ключевая фраза для отмены:", self.input_cancel_word))
 
-        # Кнопка сохранения
-        btn_save = Button(
+        # Кнопка сохранения — заменена на FixedButton
+        btn_save = FixedButton(
             text="Сохранить настройки",
-            background_normal='',
-            background_color=(0.18, 0.5, 0.25, 1),
+            bg_color=(0.18, 0.5, 0.25, 1),
             size_hint=(None, None),
             width=dp(320),
             height=dp(45),
             font_size=sp(16),
-            pos_hint={'center_x': 0.5, 'y': 0.02},
-            color=(1, 1, 1, 1)
+            pos_hint={'center_x': 0.5, 'y': 0.02}
         )
         btn_save.bind(on_press=self.save_settings_data)
         layout.add_widget(btn_save)
@@ -5610,21 +5534,25 @@ class PhoneSettingsScreen(Screen):
             except Exception as e:
                 print(f"[ОШИБКА СОХРАНЕНИЯ]: {e}")
 
+        # Обязательный возврат на главный экран после сохранения
+        if self.manager:
+            self.manager.current = 'main'
+
+
 
 class PhoneAssistantManager:
     def __init__(self):
         self.is_waiting_for_call_target = False
-        self.is_incoming_active = False  # Флаг активного входящего звонка для голосовых команд
+        self.is_incoming_active = False  # Флаг входящего вызова для голосовых команд («алло» / «сброс»)
         self.receiver = None
         self.app_instance = None
 
     def init_receiver(self, app_instance):
-        """Регистрация динамического BroadcastReceiver с оберткой в главный поток (Clock)"""
+        """Регистрация динамического BroadcastReceiver с изоляцией в главный поток (Clock)"""
         self.app_instance = app_instance
         if platform == 'android':
             try:
                 activity = PythonActivity.mActivity
-                # Обертка гарантирует выполнение в главном потоке Kivy UI
                 self.receiver = PhoneStateReceiver(
                     lambda state, num: Clock.schedule_once(lambda dt: self.handle_phone_state(state, num), 0)
                 )
@@ -5640,7 +5568,7 @@ class PhoneAssistantManager:
             print("[PC SIMULATION] Инициализация симуляции слушателя звонков")
 
     def handle_phone_state(self, state, number):
-        """Обработчик событий от системного ресивера (выполняется в главном потоке)"""
+        """Обработчик системных событий звонка (выполняется в главном потоке Kivy)"""
         if not self.app_instance:
             return
 
@@ -5650,7 +5578,6 @@ class PhoneAssistantManager:
             display_text = f"Входящий вызов: {contact_name}"
             print(f"[TELEPHONY EVENT] {display_text}")
 
-            # 1. Показываем наш кастомный экран входящего вызова
             if hasattr(self.app_instance, 'show_incoming_call_ui'):
                 self.app_instance.show_incoming_call_ui(contact_name, number)
             else:
@@ -5659,9 +5586,7 @@ class PhoneAssistantManager:
                     color=(1.0, 0.5, 0.2, 1)
                 )
 
-            # 2. Озвучиваем голосом входящий вызов (с очисткой TTS)
-            speech_phrase = f"Входящий вызов от абонента {contact_name}"
-            self.speak_text(speech_phrase)
+            self.speak_text(f"Входящий вызов от абонента {contact_name}")
 
         elif state == "idle":
             self.is_incoming_active = False
@@ -5678,11 +5603,14 @@ class PhoneAssistantManager:
             self.is_waiting_for_call_target = False
 
     def get_phone_number_by_name(self, name_query):
-        """Ищет номер телефона в контактах Android по имени"""
-        phone_number = name_query.strip()
+        """Профессиональный поиск контакта с перебором всех номеров и приоритетом мобильного"""
+        if not name_query:
+            return ""
 
-        if any(char.isdigit() for char in phone_number) and len([c for c in phone_number if c.isdigit()]) >= 3:
-            return phone_number
+        phone_number = name_query.strip()
+        digits_only = "".join([c for c in phone_number if c.isdigit()])
+        if len(digits_only) >= 3:
+            return phone_number  # Передан готовый номер телефона
 
         if platform == 'android':
             try:
@@ -5693,7 +5621,8 @@ class PhoneAssistantManager:
                 uri = ContactsContract.CONTENT_URI
                 projection = [
                     ContactsContract.DISPLAY_NAME,
-                    ContactsContract.NUMBER
+                    ContactsContract.NUMBER,
+                    ContactsContract.TYPE
                 ]
 
                 selection = f"{ContactsContract.DISPLAY_NAME} LIKE ?"
@@ -5701,44 +5630,64 @@ class PhoneAssistantManager:
 
                 cursor = content_resolver.query(uri, projection, selection, selection_args, None)
 
-                if cursor and cursor.moveToFirst():
-                    number_idx = cursor.getColumnIndex(ContactsContract.NUMBER)
-                    found_number = cursor.getString(number_idx)
-                    cursor.close()
-                    print(f"[CONTACTS] Найден контакт для '{name_query}': {found_number}")
-                    return found_number
-
+                found_numbers = []
                 if cursor:
+                    while cursor.moveToNext():
+                        name_idx = cursor.getColumnIndex(ContactsContract.DISPLAY_NAME)
+                        num_idx = cursor.getColumnIndex(ContactsContract.NUMBER)
+                        type_idx = cursor.getColumnIndex(ContactsContract.TYPE)
+
+                        contact_name = cursor.getString(name_idx)
+                        number = cursor.getString(num_idx)
+                        num_type = cursor.getInt(type_idx)
+
+                        found_numbers.append({'name': contact_name, 'number': number, 'type': num_type})
                     cursor.close()
-                print(f"[CONTACTS] Контакт '{name_query}' не найден, пробуем как текст.")
+
+                if found_numbers:
+                    print(f"[CONTACTS] Найдено записей для '{name_query}': {len(found_numbers)}")
+
+                    # 1. Ищем мобильный номер (TYPE_MOBILE обычно равен 2 в Android API)
+                    for item in found_numbers:
+                        if item['type'] == 2:
+                            print(f"[CONTACTS] Выбран приоритетный мобильный: {item['number']}")
+                            return item['number']
+
+                    # 2. Если мобильного нет, берем первый доступный
+                    print(f"[CONTACTS] Мобильный не найден, берем первый: {found_numbers[0]['number']}")
+                    return found_numbers[0]['number']
+
+                print(f"[CONTACTS] Контакт '{name_query}' не найден в записной книжке.")
             except Exception as e:
                 print(f"[CONTACTS ERROR]: {e}")
 
         return phone_number
 
     def execute_outgoing_call(self, query_target):
-        """Исходящий вызов в фоновом режиме (ACTION_CALL) без свертывания приложения + наш UI"""
+        """Запуск исходящего вызова с проверкой контактов и озвучкой"""
         phone_number = self.get_phone_number_by_name(query_target)
-        contact_name = self.get_contact_name_by_number(phone_number)
 
+        if not phone_number or any(c.isalpha() for c in phone_number):
+            error_msg = f"Контакт {query_target} не найден"
+            print(f"[TELEPHONY ERROR] {error_msg}")
+            self.speak_text(error_msg)
+            if self.app_instance and hasattr(self.app_instance, 'update_current_screen_status'):
+                self.app_instance.update_current_screen_status(error_msg, color=(1, 0.3, 0.3, 1))
+            return
+
+        contact_name = self.get_contact_name_by_number(phone_number)
         if not contact_name or contact_name == phone_number:
             contact_name = query_target
 
         print(f"[TELEPHONY] Запуск исходящего вызова на: {contact_name} ({phone_number})")
 
-        # 1. Показываем наш собственный интерфейс исходящего звонка внутри приложения
         if self.app_instance and hasattr(self.app_instance, 'show_outgoing_call_ui'):
             self.app_instance.show_outgoing_call_ui(contact_name, phone_number)
 
-        # 2. Озвучиваем голосом
         self.speak_text(f"Звоню абоненту {contact_name}")
 
-        # 3. Запускаем тихий вызов в фоне через ACTION_CALL (требует CALL_PHONE)
         if platform == 'android':
             try:
-                Intent = autoclass('android.content.Intent')
-                Uri = autoclass('android.net.Uri')
-
                 context = PythonActivity.mActivity
                 intent = Intent(Intent.ACTION_CALL)
                 intent.setData(Uri.parse(f"tel:{phone_number}"))
@@ -5747,26 +5696,38 @@ class PhoneAssistantManager:
                 context.startActivity(intent)
                 print(f"[CALL SUCCESS] ACTION_CALL запущен для {phone_number}")
             except Exception as e:
-                print(f"[CALL ERROR (Убедитесь, что выдано разрешение CALL_PHONE)]: {e}")
+                print(f"[CALL ERROR (Проверьте разрешение CALL_PHONE)]: {e}")
         else:
-            print(f"[PC SIMULATION] Имитация исходящего звонка на: {phone_number}")
+            print(f"[PC SIMULATION] Имитация исходящего вызова на: {phone_number}")
 
     def answer_incoming_call(self):
-        """Ответ на входящий вызов"""
+        """Ответ на входящий вызов (TelecomManager + эмуляция гарнитуры HeadsetHook)"""
         print("[TELEPHONY] Ответ на входящий вызов...")
         self.is_incoming_active = False
         if platform == 'android':
             try:
-                Context = autoclass('android.content.Context')
                 context = PythonActivity.mActivity
                 telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
                 if telecom_manager and hasattr(telecom_manager, 'acceptRingingCall'):
                     telecom_manager.acceptRingingCall()
                     print("[CALL SUCCESS] Вызов принят через TelecomManager")
-                else:
-                    print("[CALL WARNING] acceptRingingCall недоступен")
+                    return
             except Exception as e:
-                print(f"[ANSWER ERROR]: {e}")
+                print(f"[ANSWER TELECOM WARNING]: {e}")
+
+            try:
+                context = PythonActivity.mActivity
+                down_intent = Intent(Intent.ACTION_MEDIA_BUTTON)
+                down_intent.putExtra(Intent.EXTRA_KEY_EVENT,
+                                     KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HEADSETHOOK))
+                context.sendOrderedBroadcast(down_intent, None)
+
+                up_intent = Intent(Intent.ACTION_MEDIA_BUTTON)
+                up_intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HEADSETHOOK))
+                context.sendOrderedBroadcast(up_intent, None)
+                print("[CALL SUCCESS] Сигнал ответа отправлен через HeadsetHook")
+            except Exception as e:
+                print(f"[ANSWER ERROR HEADSETHOOK]: {e}")
         else:
             print("[PC SIMULATION] Имитация ответа на звонок")
 
@@ -5776,28 +5737,33 @@ class PhoneAssistantManager:
         self.is_incoming_active = False
         if platform == 'android':
             try:
-                Context = autoclass('android.content.Context')
                 context = PythonActivity.mActivity
                 telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
                 if telecom_manager and hasattr(telecom_manager, 'endCall'):
                     telecom_manager.endCall()
-                    print("[CALL SUCCESS] Вызов отклонен")
-                else:
-                    print("[CALL WARNING] endCall заблокирован системой")
+                    print("[CALL SUCCESS] Вызов отклонен через TelecomManager")
+                    return
+            except Exception as e:
+                print(f"[REJECT TELECOM WARNING]: {e}")
+
+            try:
+                context = PythonActivity.mActivity
+                intent = Intent(Intent.ACTION_MEDIA_BUTTON)
+                intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENDCALL))
+                context.sendBroadcast(intent)
+                print("[CALL SUCCESS] Сигнал сброса отправлен")
             except Exception as e:
                 print(f"[REJECT ERROR]: {e}")
         else:
             print("[PC SIMULATION] Имитация сброса звонка")
 
     def get_contact_name_by_number(self, phone_number):
-        """Ищет имя контакта в Android по номеру телефона"""
+        """Определяет имя контакта по входящему номеру"""
         if not phone_number or platform != 'android':
             return phone_number
 
         try:
-            Uri = autoclass('android.net.Uri')
             ContactsContract = autoclass('android.provider.ContactsContract$PhoneLookup')
-
             context = PythonActivity.mActivity
             content_resolver = context.getContentResolver()
 
@@ -5819,15 +5785,23 @@ class PhoneAssistantManager:
         return phone_number
 
     def speak_text(self, text):
-        """Озвучка текста с помощью plyer.tts с предварительной очисткой и ударениями"""
-        # Очищаем текст и исправляем ударения (например, «кому» -> «комý») через метод приложения
-        cleaned_text = self.app_instance.clean_text_for_tts(text) if self.app_instance else text
+        """Безопасная озвучка через plyer.tts"""
+        cleaned_text = text
+        if self.app_instance and hasattr(self.app_instance, 'clean_text_for_tts'):
+            try:
+                cleaned_text = self.app_instance.clean_text_for_tts(text)
+            except Exception:
+                pass
+
         print(f"[TELEPHONY SPEECH]: {cleaned_text}")
-        try:
-            from plyer import tts
-            tts.speak(cleaned_text)
-        except Exception as e:
-            print(f"[TTS ERROR]: {e}")
+        if platform == 'android':
+            try:
+                from plyer import tts
+                tts.speak(cleaned_text)
+            except Exception as e:
+                print(f"[TTS ERROR]: {e}")
+        else:
+            print(f"[PC SIMULATION SPEECH]: {cleaned_text}")
 
 
 
@@ -5972,6 +5946,7 @@ class SmartApp(App):
 
     def start_call_timer(self, label_widget):
         """Запускает секундомер длительности вызова"""
+        self.stop_call_timer()  # На всякий случай гасим старый таймер
         self.call_seconds = 0
         self.timer_label_ref = label_widget
 
@@ -5992,13 +5967,11 @@ class SmartApp(App):
         self.timer_label_ref = None
 
     def show_incoming_call_ui(self, contact_name, number):
-        # Закрываем старое окно, если оно уже висело
+        # Гарантированно закрываем старое окно и останавливаем таймер
         self.hide_incoming_call_ui()
 
-        # Основной контейнер с отступами
         content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
 
-        # Рисуем полупрозрачный темный закругленный фон внутри попапа
         from kivy.graphics import Color, RoundedRectangle
         with content.canvas.before:
             Color(0.12, 0.12, 0.12, 0.9)
@@ -6006,7 +5979,6 @@ class SmartApp(App):
         content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
                      size=lambda *x: setattr(self.bg_rect, 'size', content.size))
 
-        # Текст с информацией о звонящем (сохраняем ссылку для таймера)
         self.call_status_lbl = Label(
             text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
             markup=True,
@@ -6018,7 +5990,6 @@ class SmartApp(App):
         self.call_status_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
         content.add_widget(self.call_status_lbl)
 
-        # Блок для круглых кнопок
         btn_layout = BoxLayout(
             orientation='horizontal',
             size_hint_y=None,
@@ -6027,7 +5998,6 @@ class SmartApp(App):
         )
         btn_layout.padding = [dp(60), 0, dp(60), 0]
 
-        # Зеленая кнопка ответа («Алло») -> принимает вызов и запускает таймер
         accept_btn = ImageButton(
             source='green.png',
             size_hint=(None, None),
@@ -6038,7 +6008,6 @@ class SmartApp(App):
             self.start_call_timer(self.call_status_lbl)
         ])
 
-        # Красная кнопка сброса («Сброс») -> останавливает таймер, сбрасывает и закрывает окно
         reject_btn = ImageButton(
             source='red.png',
             size_hint=(None, None),
@@ -6054,7 +6023,6 @@ class SmartApp(App):
         btn_layout.add_widget(reject_btn)
         content.add_widget(btn_layout)
 
-        # Сам Popup
         self.incoming_popup = Popup(
             title='',
             content=content,
@@ -6067,7 +6035,7 @@ class SmartApp(App):
         self.incoming_popup.open()
 
     def show_outgoing_call_ui(self, contact_name, number):
-        """Окно исходящего вызова внутри приложения (без ухода в системную звонилку)"""
+        """Окно исходящего вызова внутри приложения"""
         self.hide_incoming_call_ui()
         content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
 
