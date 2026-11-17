@@ -700,12 +700,12 @@ class VoiceAssistant:
         # --- СЛОВАРЬ ФОНЕТИЧЕСКИХ КОРРЕКЦИЙ ДЛЯ TTS ---
         # Здесь можно прописывать слова, которые движок читает неправильно
         pronunciation_dict = {
-            r'\bкому\b': 'камý',
+            r'\bкому\b': 'каму',  # Заменяем на написание без спецсимволов с ударением
             r'\bтак\b': 'так',
             r'\bи\b': 'и',
-            r'\bговори\b': 'говóри',
+            r'\bговори\b': 'говори',
             r'\bне\b': 'не',
-            r'\bправильно\b': 'прáвильно',
+            r'\bправильно\b': 'правильно',
         }
 
         for pattern, replacement in pronunciation_dict.items():
@@ -1411,28 +1411,8 @@ class VoiceAssistant:
 
             # --- А. ПРИОРИТЕТ 1: УПРАВЛЕНИЕ ТЕЛЕФОНИЕЙ И ДИАЛОГАМИ ---
             if app and hasattr(app, 'telephony'):
-                # 1. Проверка ожидания выбора конкретного номера из нескольких
-                if getattr(app.telephony, 'is_waiting_for_number_choice', False):
-                    if app.telephony.handle_voice_command(norm_command):
-                        return
 
-                # 2. Управление входящим вызовом
-                if getattr(app.telephony, 'is_incoming_active', False):
-                    if any(w in norm_command for w in answer_words):
-                        print("[TELEPHONY] Голосовая команда: Принять входящий вызов")
-                        app.telephony.answer_incoming_call()
-                        if hasattr(app, 'start_call_timer') and hasattr(app, 'call_status_lbl'):
-                            app.start_call_timer(app.call_status_lbl)
-                        return
-
-                    if any(w in norm_command for w in reject_words) or any(w in norm_command for w in cancel_words):
-                        print("[TELEPHONY] Голосовая команда: Сбросить входящий вызов")
-                        app.telephony.reject_incoming_call()
-                        if hasattr(app, 'hide_incoming_call_ui'):
-                            app.hide_incoming_call_ui()
-                        return
-
-                # 3. Глобальная отмена
+                # 1. Глобальная отмена (стоит на самом верху, чтобы слово «отмена» сбрасывало любые зависшие режимы)
                 if any(w in norm_command for w in cancel_words):
                     print(f"[TELEPHONY DEBUG] Распознана команда отмены: '{norm_command}'")
                     app.telephony.cancel_call_waiting()
@@ -1450,6 +1430,28 @@ class VoiceAssistant:
 
                         Clock.schedule_once(reset_to_idle, 1.5)
                     return
+
+                # 2. Проверка ожидания выбора конкретного номера из нескольких
+                if getattr(app.telephony, 'is_waiting_for_number_choice', False):
+                    print(f"[TELEPHONY DEBUG] Перехват выбора номера: '{norm_command}'")
+                    app.telephony.handle_number_choice(norm_command)
+                    return
+
+                # 3. Управление входящим вызовом
+                if getattr(app.telephony, 'is_incoming_active', False):
+                    if any(w in norm_command for w in answer_words):
+                        print("[TELEPHONY] Голосовая команда: Принять входящий вызов")
+                        app.telephony.answer_incoming_call()
+                        if hasattr(app, 'start_call_timer') and hasattr(app, 'call_status_lbl'):
+                            app.start_call_timer(app.call_status_lbl)
+                        return
+
+                    if any(w in norm_command for w in reject_words):
+                        print("[TELEPHONY] Голосовая команда: Сбросить входящий вызов")
+                        app.telephony.reject_incoming_call()
+                        if hasattr(app, 'hide_incoming_call_ui'):
+                            app.hide_incoming_call_ui()
+                        return
 
                 # 4. Если ассистент ждал имя абонента для исходящего вызова
                 if getattr(self, 'is_waiting_for_call_target', False):
@@ -1478,6 +1480,7 @@ class VoiceAssistant:
                         if hasattr(app.telephony, 'speak_text'):
                             app.telephony.speak_text("Кому позвонить?")
                     return
+
 
             # ==========================================
             # ПРИОРИТЕТ 3: УПРАВЛЕНИЕ СВЕТОМ И УМНЫМ ДОМОМ
@@ -5619,6 +5622,11 @@ class PhoneAssistantManager:
         self.is_waiting_for_call_target = False
         self.is_waiting_for_number_choice = False
         self.pending_choices = []
+
+        # Гарантированно закрываем любые активные попапы при отмене
+        if self.app_instance and hasattr(self.app_instance, 'hide_incoming_call_ui'):
+            Clock.schedule_once(lambda dt: self.app_instance.hide_incoming_call_ui(), 0)
+
         print("[TELEPHONY] Режимы ожидания сброшены.")
 
     def get_phone_number_by_name(self, name_query):
@@ -5692,7 +5700,16 @@ class PhoneAssistantManager:
                         prompt = f"У абонента {found_numbers[0]['name']} несколько номеров: {types_desc}. Какой набрать?"
                         print(f"[TELEPHONY CHOICE] {prompt}")
                         self.speak_text(prompt)
-                        return None  # Ждем ответа пользователя по номеру
+
+                        # АВТОМАТИЧЕСКИ ОТКРЫВАЕМ ВИЗУАЛЬНЫЙ ПОПАП С КНОПКАМИ НА ГЛАВНОМ ПОТОКЕ
+                        if self.app_instance and hasattr(self.app_instance, 'show_number_choice_popup'):
+                            Clock.schedule_once(
+                                lambda dt: self.app_instance.show_number_choice_popup(
+                                    found_numbers[0]['name'], found_numbers
+                                ), 0
+                            )
+
+                        return None  # Ждем ответа пользователя по номеру или клику
                 else:
                     print(f"[CONTACTS] Контакт '{name_query}' не найден в записной книжке.")
             except Exception as e:
@@ -5706,29 +5723,39 @@ class PhoneAssistantManager:
             return False
 
         speech_lower = user_speech.lower()
+        print(f"[TELEPHONY CHOICE DEBUG] Распознан ответ для выбора номера: '{speech_lower}'")
         selected_item = None
 
-        # Проверяем тип номера
+        # 1. Проверяем тип номера
         for item in self.pending_choices:
-            if item['type_str'] in speech_lower:
+            if item['type_str'].lower() in speech_lower or speech_lower in item['type_str'].lower():
                 selected_item = item
                 break
 
-        # Проверяем порядковый номер («первый», «второй»)
+        # 2. Проверяем порядковый номер («первый», «второй», «один», «два»)
         if not selected_item:
-            if "перв" in speech_lower and len(self.pending_choices) >= 1:
+            if any(w in speech_lower for w in ["перв", "один", "раз"]) and len(self.pending_choices) >= 1:
                 selected_item = self.pending_choices[0]
-            elif "втор" in speech_lower and len(self.pending_choices) >= 2:
+            elif any(w in speech_lower for w in ["втор", "два"]) and len(self.pending_choices) >= 2:
                 selected_item = self.pending_choices[1]
+            elif any(w in speech_lower for w in ["треть", "три"]) and len(self.pending_choices) >= 3:
+                selected_item = self.pending_choices[2]
 
         if selected_item:
             self.is_waiting_for_number_choice = False
-            choices_backup = self.pending_choices
             self.pending_choices = []
+
+            # Закрываем попап выбора, если он был открыт на экране
+            if self.app_instance and hasattr(self.app_instance, 'hide_incoming_call_ui'):
+                Clock.schedule_once(lambda dt: self.app_instance.hide_incoming_call_ui(), 0)
+
+            print(f"[TELEPHONY CHOICE SUCCESS] Выбран номер: {selected_item['number']} ({selected_item['type_str']})")
             self._start_call_action(selected_item['number'], selected_item['name'])
             return True
         else:
-            self.speak_text("Не понял, какой номер набрать. Скажите: мобильный или рабочий.")
+            warning_msg = "Не понял, какой номер набрать. Скажите: мобильный или рабочий, либо выберите на экране."
+            print(f"[TELEPHONY CHOICE WARNING] {warning_msg}")
+            self.speak_text(warning_msg)
             return True
 
     def execute_outgoing_call(self, query_target):
@@ -6020,45 +6047,72 @@ class SmartApp(App):
 
         return sm
 
-    def process_voice_command(self, recognized_speech):
-        """Централизованная обработка голосовых команд для телефонии и ассистента"""
-        if not recognized_speech:
-            return
+    def show_number_choice_popup(self, contact_name, choices):
+        """Показывает визуальное окно выбора номера при нескольких совпадениях"""
+        self.hide_incoming_call_ui()
 
-        text = recognized_speech.lower()
-        print(f"[VOICE COMMAND RECEIVED]: {text}")
+        content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(12))
 
-        # 1. Приоритетная проверка команды «отмена» или «стоп»
-        if any(word in text for word in ["отмена", "стоп", "хватит"]):
-            if hasattr(self, 'telephony'):
-                self.telephony.cancel_call_waiting()
-                self.telephony.speak_text("Отменено")
-            return
+        from kivy.graphics import Color, RoundedRectangle
+        with content.canvas.before:
+            Color(0.12, 0.12, 0.12, 0.95)
+            self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
+        content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
+                     size=lambda *x: setattr(self.bg_rect, 'size', content.size))
 
-        # 2. Если ассистент ждет уточнения, какой именно номер набрать из нескольких
-        if hasattr(self, 'telephony') and self.telephony.is_waiting_for_number_choice:
-            self.telephony.handle_number_choice(text)
-            return
+        title_lbl = Label(
+            text=f"[b]У абонента {contact_name}[/b]\nнесколько номеров:",
+            markup=True,
+            font_size=sp(18),
+            color=(1, 1, 1, 1),
+            halign='center',
+            valign='middle'
+        )
+        title_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
+        content.add_widget(title_lbl)
 
-        # 3. Если ассистент ждет имя контакта для исходящего звонка
-        if hasattr(self, 'telephony') and self.telephony.is_waiting_for_call_target:
-            self.telephony.execute_outgoing_call(text)
-            self.telephony.is_waiting_for_call_target = False
-            return
+        # Создаем интерактивную кнопку для каждого найденного номера
+        for item in choices:
+            btn_text = f"{item['type_str'].capitalize()}: {item['number']}"
+            choice_btn = Button(
+                text=btn_text,
+                size_hint_y=None,
+                height=dp(50),
+                background_color=(0.2, 0.6, 0.8, 1)
+            )
+            choice_btn.bind(on_release=lambda x, num=item['number'], name=item['name']: [
+                self.hide_incoming_call_ui(),
+                self.telephony.cancel_call_waiting(),
+                self.telephony._start_call_action(num, name)
+            ])
+            content.add_widget(choice_btn)
 
-        # 4. Управление входящим вызовом голосом («алло» / «сброс»)
-        if hasattr(self, 'telephony') and self.telephony.is_incoming_active:
-            if any(word in text for word in ["алло", "принять", "ответ", "говори"]):
-                self.telephony.answer_incoming_call()
-                self.start_call_timer(self.call_status_lbl if hasattr(self, 'call_status_lbl') else None)
-            elif any(word in text for word in ["сброс", "отбой", "положить", "не хочу"]):
-                self.telephony.reject_incoming_call()
-                self.hide_incoming_call_ui()
-            return
+        cancel_btn = Button(
+            text="Отмена",
+            size_hint_y=None,
+            height=dp(45),
+            background_color=(0.8, 0.3, 0.3, 1)
+        )
+        cancel_btn.bind(on_release=lambda x: [
+            self.telephony.cancel_call_waiting(),
+            self.hide_incoming_call_ui()
+        ])
+        content.add_widget(cancel_btn)
+
+        self.incoming_popup = Popup(
+            title='',
+            content=content,
+            size_hint=(0.85, 0.5),
+            auto_dismiss=False,
+            separator_height=0,
+            background=''
+        )
+        self.incoming_popup.background_color = (0, 0, 0, 0.6)
+        self.incoming_popup.open()
 
     def start_call_timer(self, label_widget):
         """Запускает секундомер длительности вызова"""
-        self.stop_call_timer()  # На всякий случай гасим старый таймер
+        self.stop_call_timer()
         self.call_seconds = 0
         self.timer_label_ref = label_widget
 
@@ -6079,7 +6133,6 @@ class SmartApp(App):
         self.timer_label_ref = None
 
     def show_incoming_call_ui(self, contact_name, number):
-        # Гарантированно закрываем старое окно и останавливаем таймер
         self.hide_incoming_call_ui()
 
         content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
@@ -6182,7 +6235,6 @@ class SmartApp(App):
             size_hint=(None, None),
             size=(dp(70), dp(70))
         )
-        # Исправлено: при сбросе исходящего вызова вызываем reject_incoming_call (или endCall), чтобы прервать набор
         reject_btn.bind(on_release=lambda x: [
             self.stop_call_timer(),
             self.telephony.reject_incoming_call(),
@@ -6203,7 +6255,6 @@ class SmartApp(App):
         self.incoming_popup.background_color = (0, 0, 0, 0.6)
         self.incoming_popup.open()
 
-        # Автоматически запускаем таймер на исходящем вызове
         self.start_call_timer(self.call_status_lbl)
 
     def hide_incoming_call_ui(self):
