@@ -700,9 +700,12 @@ class VoiceAssistant:
         # --- СЛОВАРЬ ФОНЕТИЧЕСКИХ КОРРЕКЦИЙ ДЛЯ TTS ---
         # Здесь можно прописывать слова, которые движок читает неправильно
         pronunciation_dict = {
-            #r'\bкому\b': 'комý',  # Принудительное ударение на 'у' через спецсимвол
-            # Или, если движок упорно коверкает «о», попробуйте вариант с ударением на 'у':
             r'\bкому\b': 'камý',
+            r'\bтак\b': 'так',
+            r'\bи\b': 'и',
+            r'\bговори\b': 'говóри',
+            r'\bне\b': 'не',
+            r'\bправильно\b': 'прáвильно',
         }
 
         for pattern, replacement in pronunciation_dict.items():
@@ -1406,67 +1409,75 @@ class VoiceAssistant:
             is_cam_session = (getattr(self, 'current_mode', None) == "cam" and self.is_active)
             has_cam_word = any(w in norm_command for w in (cam_words if 'cam_words' in locals() else []))
 
-            # --- А. ПРИОРИТЕТ 1: УПРАВЛЕНИЕ ВХОДЯЩИМ ЗВОНКОМ ---
-            if app and hasattr(app, 'telephony') and getattr(app.telephony, 'is_incoming_active', False):
-                if any(w in norm_command for w in answer_words):
-                    print("[TELEPHONY] Голосовая команда: Принять входящий вызов")
-                    app.telephony.answer_incoming_call()
+            # --- А. ПРИОРИТЕТ 1: УПРАВЛЕНИЕ ТЕЛЕФОНИЕЙ И ДИАЛОГАМИ ---
+            if app and hasattr(app, 'telephony'):
+                # 1. Проверка ожидания выбора конкретного номера из нескольких
+                if getattr(app.telephony, 'is_waiting_for_number_choice', False):
+                    if app.telephony.handle_voice_command(norm_command):
+                        return
+
+                # 2. Управление входящим вызовом
+                if getattr(app.telephony, 'is_incoming_active', False):
+                    if any(w in norm_command for w in answer_words):
+                        print("[TELEPHONY] Голосовая команда: Принять входящий вызов")
+                        app.telephony.answer_incoming_call()
+                        if hasattr(app, 'start_call_timer') and hasattr(app, 'call_status_lbl'):
+                            app.start_call_timer(app.call_status_lbl)
+                        return
+
+                    if any(w in norm_command for w in reject_words) or any(w in norm_command for w in cancel_words):
+                        print("[TELEPHONY] Голосовая команда: Сбросить входящий вызов")
+                        app.telephony.reject_incoming_call()
+                        if hasattr(app, 'hide_incoming_call_ui'):
+                            app.hide_incoming_call_ui()
+                        return
+
+                # 3. Глобальная отмена
+                if any(w in norm_command for w in cancel_words):
+                    print(f"[TELEPHONY DEBUG] Распознана команда отмены: '{norm_command}'")
+                    app.telephony.cancel_call_waiting()
+                    self.is_waiting_for_call_target = False
+                    self.is_active = False
+                    self.current_session_mode = None
+
+                    if hasattr(app, 'update_current_screen_status'):
+                        app.update_current_screen_status("Ассистент: Действие отменено", color=(0.8, 0.4, 0.4, 1))
+
+                        def reset_to_idle(dt):
+                            hint = app.get_current_wake_hint() if hasattr(app, 'get_current_wake_hint') else "алиса"
+                            app.update_current_screen_status(f"Ассистент: Ожидание («{hint}»)",
+                                                             color=(0.6, 0.6, 0.6, 1))
+
+                        Clock.schedule_once(reset_to_idle, 1.5)
                     return
 
-                if any(w in norm_command for w in reject_words) or any(w in norm_command for w in cancel_words):
-                    print("[TELEPHONY] Голосовая команда: Сбросить входящий вызов")
-                    app.telephony.reject_incoming_call()
-                    if hasattr(app, 'hide_incoming_call_ui'):
-                        app.hide_incoming_call_ui()
-                    return
-
-            # --- Б. ПРИОРИТЕТ 2: КОМАНДЫ ТЕЛЕФОНИИ (ОТМЕНА / ИСХОДЯЩИЕ) ---
-            if any(w in norm_command for w in cancel_words):
-                print(f"[TELEPHONY DEBUG] Распознана команда отмены: '{norm_command}'")
-                self.is_waiting_for_call_target = False
-                self.is_active = False
-                self.current_session_mode = None
-
-                if app and hasattr(app, 'update_current_screen_status'):
-                    app.update_current_screen_status("Ассистент: Действие отменено", color=(0.8, 0.4, 0.4, 1))
-
-                    def reset_to_idle(dt):
-                        if hasattr(app, 'get_current_wake_hint'):
-                            hint = app.get_current_wake_hint()
-                        else:
-                            hint = "алиса"
-                        app.update_current_screen_status(f"Ассистент: Ожидание («{hint}»)", color=(0.6, 0.6, 0.6, 1))
-
-                    Clock.schedule_once(reset_to_idle, 1.5)
-                return
-
-            # Если ждали имя абонента для исходящего вызова
-            if getattr(self, 'is_waiting_for_call_target', False):
-                print(f"[TELEPHONY DEBUG] Получено имя для исходящего вызова: '{norm_command}'")
-                self.is_waiting_for_call_target = False
-                if app and hasattr(app, 'telephony'):
+                # 4. Если ассистент ждал имя абонента для исходящего вызова
+                if getattr(self, 'is_waiting_for_call_target', False):
+                    print(f"[TELEPHONY DEBUG] Получено имя для исходящего вызова: '{norm_command}'")
+                    self.is_waiting_for_call_target = False
                     app.telephony.execute_outgoing_call(norm_command)
-                return
+                    return
 
-            if any(w in norm_command for w in call_words):
-                target_part = norm_command
-                for w in call_words:
-                    target_part = target_part.replace(w, "").strip()
+                # 5. Триггер команды «позвони»
+                if any(w in norm_command for w in call_words):
+                    target_part = norm_command
+                    for w in call_words:
+                        target_part = target_part.replace(w, "").strip()
 
-                if target_part:
-                    print(f"[TELEPHONY DEBUG] Исходящий вызов для: '{target_part}'")
-                    if app and hasattr(app, 'telephony'):
+                    if target_part:
+                        print(f"[TELEPHONY DEBUG] Исходящий вызов для: '{target_part}'")
                         app.telephony.execute_outgoing_call(target_part)
-                else:
-                    print("[TELEPHONY DEBUG] Ожидание имени абонента...")
-                    self.is_waiting_for_call_target = True
+                    else:
+                        print("[TELEPHONY DEBUG] Ожидание имени абонента...")
+                        self.is_waiting_for_call_target = True
 
-                    if app and hasattr(app, 'update_current_screen_status'):
-                        app.update_current_screen_status("Кому позвонить? (Имя или «Отмена»)", color=(1.0, 0.6, 0.2, 1))
+                        if hasattr(app, 'update_current_screen_status'):
+                            app.update_current_screen_status("Кому позвонить? (Имя или «Отмена»)",
+                                                             color=(1.0, 0.6, 0.2, 1))
 
-                    if app and hasattr(app, 'telephony') and hasattr(app.telephony, 'speak_text'):
-                        app.telephony.speak_text("Кому позвонить?")
-                return
+                        if hasattr(app.telephony, 'speak_text'):
+                            app.telephony.speak_text("Кому позвонить?")
+                    return
 
             # ==========================================
             # ПРИОРИТЕТ 3: УПРАВЛЕНИЕ СВЕТОМ И УМНЫМ ДОМОМ
@@ -5539,11 +5550,12 @@ class PhoneSettingsScreen(Screen):
             self.manager.current = 'main'
 
 
-
 class PhoneAssistantManager:
     def __init__(self):
         self.is_waiting_for_call_target = False
         self.is_incoming_active = False  # Флаг входящего вызова для голосовых команд («алло» / «сброс»)
+        self.is_waiting_for_number_choice = False  # Флаг ожидания выбора конкретного номера
+        self.pending_choices = []  # Список найденных номеров для текущего контакта
         self.receiver = None
         self.app_instance = None
 
@@ -5600,10 +5612,17 @@ class PhoneAssistantManager:
                     color=(0.6, 0.6, 0.6, 1)
                 )
 
-            self.is_waiting_for_call_target = False
+            self.cancel_call_waiting()
+
+    def cancel_call_waiting(self):
+        """Полный сброс всех состояний ожидания по команде 'отмена'"""
+        self.is_waiting_for_call_target = False
+        self.is_waiting_for_number_choice = False
+        self.pending_choices = []
+        print("[TELEPHONY] Режимы ожидания сброшены.")
 
     def get_phone_number_by_name(self, name_query):
-        """Профессиональный поиск контакта с перебором всех номеров и приоритетом мобильного"""
+        """Регистронезависимый поиск с возвратом списка для диалога выбора"""
         if not name_query:
             return ""
 
@@ -5625,8 +5644,10 @@ class PhoneAssistantManager:
                     ContactsContract.TYPE
                 ]
 
-                selection = f"{ContactsContract.DISPLAY_NAME} LIKE ?"
-                selection_args = [f"%{name_query}%"]
+                # Регистронезависимый поиск через LOWER()
+                selection = f"LOWER({ContactsContract.DISPLAY_NAME}) LIKE ?"
+                query_lower = f"%{name_query.lower()}%"
+                selection_args = [query_lower]
 
                 cursor = content_resolver.query(uri, projection, selection, selection_args, None)
 
@@ -5641,31 +5662,82 @@ class PhoneAssistantManager:
                         number = cursor.getString(num_idx)
                         num_type = cursor.getInt(type_idx)
 
-                        found_numbers.append({'name': contact_name, 'number': number, 'type': num_type})
+                        # Расшифровываем тип номера
+                        type_name = "мобильный"
+                        if num_type == 1:
+                            type_name = "домашний"
+                        elif num_type == 2:
+                            type_name = "мобильный"
+                        elif num_type == 3:
+                            type_name = "рабочий"
+
+                        found_numbers.append({'name': contact_name, 'number': number, 'type_str': type_name})
                     cursor.close()
 
                 if found_numbers:
-                    print(f"[CONTACTS] Найдено записей для '{name_query}': {len(found_numbers)}")
+                    # Уникализируем номера, чтобы избежать дублей
+                    unique_dict = {item['number']: item for item in found_numbers}
+                    found_numbers = list(unique_dict.values())
 
-                    # 1. Ищем мобильный номер (TYPE_MOBILE обычно равен 2 в Android API)
-                    for item in found_numbers:
-                        if item['type'] == 2:
-                            print(f"[CONTACTS] Выбран приоритетный мобильный: {item['number']}")
-                            return item['number']
+                    print(f"[CONTACTS] Найдено уникальных номеров для '{name_query}': {len(found_numbers)}")
 
-                    # 2. Если мобильного нет, берем первый доступный
-                    print(f"[CONTACTS] Мобильный не найден, берем первый: {found_numbers[0]['number']}")
-                    return found_numbers[0]['number']
+                    if len(found_numbers) == 1:
+                        return found_numbers[0]['number']
+                    else:
+                        # Сохраняем варианты для интерактивного выбора голосом
+                        self.pending_choices = found_numbers
+                        self.is_waiting_for_number_choice = True
 
-                print(f"[CONTACTS] Контакт '{name_query}' не найден в записной книжке.")
+                        types_desc = ", ".join([item['type_str'] for item in found_numbers])
+                        prompt = f"У абонента {found_numbers[0]['name']} несколько номеров: {types_desc}. Какой набрать?"
+                        print(f"[TELEPHONY CHOICE] {prompt}")
+                        self.speak_text(prompt)
+                        return None  # Ждем ответа пользователя по номеру
+                else:
+                    print(f"[CONTACTS] Контакт '{name_query}' не найден в записной книжке.")
             except Exception as e:
                 print(f"[CONTACTS ERROR]: {e}")
 
         return phone_number
 
+    def handle_number_choice(self, user_speech):
+        """Обрабатывает ответ пользователя («мобильный», «рабочий», «первый»)"""
+        if not self.is_waiting_for_number_choice or not self.pending_choices:
+            return False
+
+        speech_lower = user_speech.lower()
+        selected_item = None
+
+        # Проверяем тип номера
+        for item in self.pending_choices:
+            if item['type_str'] in speech_lower:
+                selected_item = item
+                break
+
+        # Проверяем порядковый номер («первый», «второй»)
+        if not selected_item:
+            if "перв" in speech_lower and len(self.pending_choices) >= 1:
+                selected_item = self.pending_choices[0]
+            elif "втор" in speech_lower and len(self.pending_choices) >= 2:
+                selected_item = self.pending_choices[1]
+
+        if selected_item:
+            self.is_waiting_for_number_choice = False
+            choices_backup = self.pending_choices
+            self.pending_choices = []
+            self._start_call_action(selected_item['number'], selected_item['name'])
+            return True
+        else:
+            self.speak_text("Не понял, какой номер набрать. Скажите: мобильный или рабочий.")
+            return True
+
     def execute_outgoing_call(self, query_target):
         """Запуск исходящего вызова с проверкой контактов и озвучкой"""
         phone_number = self.get_phone_number_by_name(query_target)
+
+        # Если сработал диалог выбора нескольких номеров, phone_number будет None — прерываем досрочно
+        if self.is_waiting_for_number_choice:
+            return
 
         if not phone_number or any(c.isalpha() for c in phone_number):
             error_msg = f"Контакт {query_target} не найден"
@@ -5679,7 +5751,11 @@ class PhoneAssistantManager:
         if not contact_name or contact_name == phone_number:
             contact_name = query_target
 
-        print(f"[TELEPHONY] Запуск исходящего вызова на: {contact_name} ({phone_number})")
+        self._start_call_action(phone_number, contact_name)
+
+    def _start_call_action(self, phone_number, contact_name):
+        """Фактический запуск набора номера"""
+        print(f"[TELEPHONY] Набор номера: {contact_name} ({phone_number})")
 
         if self.app_instance and hasattr(self.app_instance, 'show_outgoing_call_ui'):
             self.app_instance.show_outgoing_call_ui(contact_name, phone_number)
@@ -5944,6 +6020,42 @@ class SmartApp(App):
 
         return sm
 
+    def process_voice_command(self, recognized_speech):
+        """Централизованная обработка голосовых команд для телефонии и ассистента"""
+        if not recognized_speech:
+            return
+
+        text = recognized_speech.lower()
+        print(f"[VOICE COMMAND RECEIVED]: {text}")
+
+        # 1. Приоритетная проверка команды «отмена» или «стоп»
+        if any(word in text for word in ["отмена", "стоп", "хватит"]):
+            if hasattr(self, 'telephony'):
+                self.telephony.cancel_call_waiting()
+                self.telephony.speak_text("Отменено")
+            return
+
+        # 2. Если ассистент ждет уточнения, какой именно номер набрать из нескольких
+        if hasattr(self, 'telephony') and self.telephony.is_waiting_for_number_choice:
+            self.telephony.handle_number_choice(text)
+            return
+
+        # 3. Если ассистент ждет имя контакта для исходящего звонка
+        if hasattr(self, 'telephony') and self.telephony.is_waiting_for_call_target:
+            self.telephony.execute_outgoing_call(text)
+            self.telephony.is_waiting_for_call_target = False
+            return
+
+        # 4. Управление входящим вызовом голосом («алло» / «сброс»)
+        if hasattr(self, 'telephony') and self.telephony.is_incoming_active:
+            if any(word in text for word in ["алло", "принять", "ответ", "говори"]):
+                self.telephony.answer_incoming_call()
+                self.start_call_timer(self.call_status_lbl if hasattr(self, 'call_status_lbl') else None)
+            elif any(word in text for word in ["сброс", "отбой", "положить", "не хочу"]):
+                self.telephony.reject_incoming_call()
+                self.hide_incoming_call_ui()
+            return
+
     def start_call_timer(self, label_widget):
         """Запускает секундомер длительности вызова"""
         self.stop_call_timer()  # На всякий случай гасим старый таймер
@@ -6070,6 +6182,7 @@ class SmartApp(App):
             size_hint=(None, None),
             size=(dp(70), dp(70))
         )
+        # Исправлено: при сбросе исходящего вызова вызываем reject_incoming_call (или endCall), чтобы прервать набор
         reject_btn.bind(on_release=lambda x: [
             self.stop_call_timer(),
             self.telephony.reject_incoming_call(),
