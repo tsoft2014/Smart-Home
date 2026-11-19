@@ -622,6 +622,11 @@ class VoiceAssistant:
         self.is_speaking = False
         self.last_spoken_text = ""
         self.current_engine = None  # Ссылка на активный движок pyttsx3 для экстренной остановки
+        self._speech_lock = threading.Lock()
+        self._speech_id = 0
+        self.is_speaking = False
+        self.last_spoken_text = ""
+        self.current_engine = None
 
     def start_activity_timer(self):
         # Отменяем предыдущий запуск, если он был, чтобы не плодить дубликаты
@@ -637,22 +642,24 @@ class VoiceAssistant:
             self.assistant_event = None
 
     def stop(self):
-        """Экстренная остановка речи (вызывается по кнопке Стоп)"""
-        print("[TTS] Принудительный сброс движка озвучки...")
-
-        # 1. Останавливаем pyttsx3 на ПК
-        if self.current_engine:
-            try:
-                self.current_engine.stop()
-            except Exception:
-                pass
-            try:
-                self.current_engine.endLoop()
-            except Exception:
-                pass
+        """Остановка текущей озвучки"""
+        print("[Assistant] Принудительная остановка...")
+        with self._speech_lock:
+            self._speech_id += 1
+            self.is_speaking = False
+            engine = self.current_engine
             self.current_engine = None
 
-        # 2. Останавливаем на Android, если поддерживается
+        if engine:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+            try:
+                engine.endLoop()
+            except Exception:
+                pass
+
         if platform == "android":
             try:
                 global _android_tts
@@ -660,8 +667,6 @@ class VoiceAssistant:
                     _android_tts.stop()
             except Exception:
                 pass
-
-        self.is_speaking = False
 
     def normalize_numbers_to_words(self, text):
         if not text:
@@ -749,20 +754,31 @@ class VoiceAssistant:
     def speak(self, text, on_done_callback=None):
         if not text or not str(text).strip():
             if on_done_callback:
-                on_done_callback()
+                Clock.schedule_once(lambda dt: on_done_callback(), 0)
             return
 
         if self.is_speaking:
             self.stop()
 
-        # Очищаем текст прямо внутри ассистента!
         clean_text = self.clean_text_for_tts(str(text))
+        if not clean_text:
+            if on_done_callback:
+                Clock.schedule_once(lambda dt: on_done_callback(), 0)
+            return
+
         self.last_spoken_text = clean_text.lower()
 
-        def _say_thread(cb=on_done_callback):
+        with self._speech_lock:
+            self._speech_id += 1
+            current_id = self._speech_id
             self.is_speaking = True
+
+        def _is_current_session():
+            with self._speech_lock:
+                return self.is_speaking and self._speech_id == current_id
+
+        def _say_thread(cb=on_done_callback, speech_token=current_id, payload=clean_text):
             engine = None
-            pythoncom_imported = False
 
             try:
                 if platform == "android":
@@ -770,82 +786,71 @@ class VoiceAssistant:
                         if _android_tts is not None:
                             HashMap = autoclass("java.util.HashMap")
                             params = HashMap()
-                            _android_tts.speak(clean_text, 0, params)
+                            _android_tts.speak(payload, 0, params)
 
                             import time
-                            words = clean_text.split()
-                            for _ in range(len(words) * 2):
-                                if not self.is_speaking:
+                            estimated_duration = max(1.8, len(payload) * 0.085)
+                            steps = int(estimated_duration / 0.2)
+                            for _ in range(max(1, steps)):
+                                if not _is_current_session():
                                     try:
                                         _android_tts.stop()
                                     except Exception:
                                         pass
                                     break
-                                time.sleep(0.3)
+                                time.sleep(0.2)
+
+                            if _is_current_session():
+                                time.sleep(0.4)
                     except Exception as e:
                         print(f"[ANDROID TTS ERROR]: {e}")
                 else:
                     try:
                         import pythoncom
                         pythoncom.CoInitialize()
-                        pythoncom_imported = True
-                    except ImportError:
+                    except Exception:
                         pass
 
                     import pyttsx3
                     engine = pyttsx3.init()
-                    self.current_engine = engine
                     engine.setProperty("rate", 170)
 
-                    # Разбиваем очищенный текст на предложения для мгновенной отмены
-                    import re
-                    sentences = re.split(r'(?<=[.!?])\s+', clean_text)
+                    with self._speech_lock:
+                        if self._speech_id == speech_token:
+                            self.current_engine = engine
+                        else:
+                            engine = None
 
-                    for sentence in sentences:
-                        if not self.is_speaking:
-                            print("[TTS] Озвучка прервана.")
-                            break
-                        if sentence.strip():
-                            engine.say(sentence)
-                            engine.runAndWait()
+                    if engine is not None and _is_current_session():
+                        engine.say(payload)
+                        engine.runAndWait()
+
+                    import time
+                    if _is_current_session():
+                        time.sleep(0.3)
 
             except Exception as e:
-                print(f"[PC TTS ERROR]: {e}")
+                print(f"[TTS ERROR]: {e}")
 
             finally:
-                if engine:
+                if engine is not None:
                     try:
                         engine.stop()
-                        engine.endLoop()
                     except Exception:
                         pass
 
-                if self.current_engine == engine:
-                    self.current_engine = None
+                with self._speech_lock:
+                    if self.current_engine == engine:
+                        self.current_engine = None
+                    is_latest = (self._speech_id == speech_token)
+                    if is_latest:
+                        self.is_speaking = False
 
-                if pythoncom_imported:
-                    try:
-                        import pythoncom
-                        pythoncom.CoUninitialize()
-                    except Exception:
-                        pass
-
-                self.is_speaking = False
-                if cb:
-                    cb()
+                if is_latest and cb:
+                    Clock.schedule_once(lambda dt: cb(), 0)
 
         threading.Thread(target=_say_thread, daemon=True).start()
 
-    def stop(self):
-        print("[Assistant] Принудительная остановка...")
-        self.is_speaking = False
-        if hasattr(self, 'current_engine') and self.current_engine:
-            try:
-                self.current_engine.stop()
-                self.current_engine.endLoop()
-            except Exception:
-                pass
-            self.current_engine = None
 
     def set_voice_input_target(self, callback_func):
         self.voice_input_target = callback_func
@@ -1412,7 +1417,15 @@ class VoiceAssistant:
             # --- А. ПРИОРИТЕТ 1: УПРАВЛЕНИЕ ТЕЛЕФОНИЕЙ И ДИАЛОГАМИ ---
             if app and hasattr(app, 'telephony'):
 
-                # 1. Глобальная отмена (стоит на самом верху, чтобы слово «отмена» сбрасывало любые зависшие режимы)
+                def _set_status(text, color):
+                    if hasattr(app, 'update_current_screen_status'):
+                        Clock.schedule_once(lambda dt: app.update_current_screen_status(text, color=color), 0)
+
+                def _idle_text():
+                    hint = app.get_current_wake_hint() if hasattr(app, 'get_current_wake_hint') else "алиса"
+                    return f"Ассистент: Ожидание («{hint}»)"
+
+                # 1. Глобальная отмена
                 if any(w in norm_command for w in cancel_words):
                     print(f"[TELEPHONY DEBUG] Распознана команда отмены: '{norm_command}'")
                     app.telephony.cancel_call_waiting()
@@ -1420,15 +1433,13 @@ class VoiceAssistant:
                     self.is_active = False
                     self.current_session_mode = None
 
-                    if hasattr(app, 'update_current_screen_status'):
-                        app.update_current_screen_status("Ассистент: Действие отменено", color=(0.8, 0.4, 0.4, 1))
-
-                        def reset_to_idle(dt):
-                            hint = app.get_current_wake_hint() if hasattr(app, 'get_current_wake_hint') else "алиса"
-                            app.update_current_screen_status(f"Ассистент: Ожидание («{hint}»)",
-                                                             color=(0.6, 0.6, 0.6, 1))
-
-                        Clock.schedule_once(reset_to_idle, 1.5)
+                    _set_status("Ассистент: Действие отменено", (0.8, 0.4, 0.4, 1))
+                    if getattr(self, "_cancel_reset_event", None):
+                        self._cancel_reset_event.cancel()
+                    self._cancel_reset_event = Clock.schedule_once(
+                        lambda dt: _set_status(_idle_text(), (0.6, 0.6, 0.6, 1)),
+                        1.5
+                    )
                     return
 
                 # 2. Проверка ожидания выбора конкретного номера из нескольких
@@ -1443,14 +1454,20 @@ class VoiceAssistant:
                         print("[TELEPHONY] Голосовая команда: Принять входящий вызов")
                         app.telephony.answer_incoming_call()
                         if hasattr(app, 'start_call_timer') and hasattr(app, 'call_status_lbl'):
-                            app.start_call_timer(app.call_status_lbl)
+                            Clock.schedule_once(lambda dt: app.start_call_timer(app.call_status_lbl), 0)
                         return
 
                     if any(w in norm_command for w in reject_words):
                         print("[TELEPHONY] Голосовая команда: Сбросить входящий вызов")
-                        app.telephony.reject_incoming_call()
-                        if hasattr(app, 'hide_incoming_call_ui'):
-                            app.hide_incoming_call_ui()
+                        self.is_waiting_for_call_target = False
+                        if hasattr(app, '_finalize_call_dismissal'):
+                            Clock.schedule_once(lambda dt: app._finalize_call_dismissal(reject_call=True), 0)
+                        else:
+                            app.telephony.reject_incoming_call()
+                            app.telephony.cancel_call_waiting()
+                            if hasattr(app, 'hide_incoming_call_ui'):
+                                Clock.schedule_once(lambda dt: app.hide_incoming_call_ui(), 0)
+                            _set_status(_idle_text(), (0.6, 0.6, 0.6, 1))
                         return
 
                 # 4. Если ассистент ждал имя абонента для исходящего вызова
@@ -1472,10 +1489,7 @@ class VoiceAssistant:
                     else:
                         print("[TELEPHONY DEBUG] Ожидание имени абонента...")
                         self.is_waiting_for_call_target = True
-
-                        if hasattr(app, 'update_current_screen_status'):
-                            app.update_current_screen_status("Кому позвонить? (Имя или «Отмена»)",
-                                                             color=(1.0, 0.6, 0.2, 1))
+                        _set_status("Кому позвонить? (Имя или «Отмена»)", (1.0, 0.6, 0.2, 1))
 
                         if hasattr(app.telephony, 'speak_text'):
                             app.telephony.speak_text("Кому позвонить?")
@@ -2543,7 +2557,7 @@ class GeminiLiveManager:
                                     "parts": [{
                                         "text": (
                                             "Ты — русскоязычный голосовой помощник умного дома. "
-                                            "Всегда общайся вежливо, кратко и исключительно на русском языке. "
+                                            "Всегда общайся вежливо, исключительно на русском языке. "
                                             "Никогда не прощайся сам по себе, если пользователь не сказал 'пока' или 'до свидания'."
                                             "Если пользователь говорит 'стоп', 'хватит', 'выход' или 'закончим разговор', "
                                             "ты должна ответить 'До свидания!', обязательно добавить в текст маркер [DISCONNECT] и завершить диалог."                                        )
@@ -3207,7 +3221,7 @@ class MainHubScreen(BaseScreen):
                 height=dp(45)
             )
             test_call_btn.bind(
-                on_release=lambda x: App.get_running_app().show_incoming_call_ui("Иван Тест", "+7 (900) 555-35-35")
+                on_release=lambda x: App.get_running_app().show_incoming_call_ui("Иван Тест", "+7 (777) 555-35-35")
             )
             content_box.add_widget(test_call_btn)
 
@@ -3495,21 +3509,22 @@ class MainHubScreen(BaseScreen):
     def open_settings_handler(self, instance):
         SystemSettingsPopup().open()
 
-
     def send_assistant_command(self, instance):
         text = self.assistant_input.text.strip()
         if not text:
             return
 
-        # 1. Переводим кнопку в режим "Отмена"
-        self.set_processing_state()
+        # Ставим флаг активности сразу, чтобы фоновый поток не принял старт за отмену
+        self.is_processing = True
+        self._current_streaming_answer = ""
 
-        # 2. Показываем пользователю статус "Думаю..."
+        if hasattr(self, 'set_processing_state'):
+            self.set_processing_state()
+
         self.update_assistant_status("Думаю...", color=(0.2, 0.7, 0.9, 1))
 
         print(f"[AI] Отправка текстового запроса: {text}")
         threading.Thread(target=self._background_ai_request, args=(text,), daemon=True).start()
-
 
     @mainthread
     def append_streaming_chunk(self, chunk_text):
@@ -3652,24 +3667,23 @@ class MainHubScreen(BaseScreen):
     def apply_response_on_main_thread(self, ai_answer):
         self.update_assistant_status("Ответ получен", color=(0.2, 0.85, 0.3, 1))
 
-        # 1. Запускаем озвучку ответа через централизованного ассистента приложения.
-        # Вся очистка текста, блокировка микрофона и сброс состояния после речи
-        # теперь управляются самим ассистентом (VoiceAssistant)!
+        def _on_tts_done():
+            self._release_mic()
+
         try:
             app = App.get_running_app()
             assistant_obj = getattr(app, 'assistant', None) or getattr(self, 'assistant', None)
 
             if assistant_obj:
-                assistant_obj.speak(ai_answer)
+                assistant_obj.speak(ai_answer, on_done_callback=_on_tts_done)
             elif hasattr(self, 'speak_answer'):
                 self.speak_answer(ai_answer)
+                _on_tts_done()
+            else:
+                _on_tts_done()
         except Exception as e:
             print(f"[TTS ERROR]: {e}")
-            # Если вдруг произошла ошибка, сразу возвращаем кнопку в норму, чтобы она не зависла
-            if hasattr(self, 'set_normal_state'):
-                self.set_normal_state()
-            elif hasattr(self, 'reset_assistant_state'):
-                self.reset_assistant_state()
+            _on_tts_done()
 
         print("[ESP] Ответ от сервера получен, работа приложения штатно продолжается.")
 
@@ -4680,15 +4694,19 @@ class AICameraSettingsPopup(Popup):
 
         content.add_widget(create_section_header("Параметры ИИ-камеры"))
 
-        # 1. Многострочный инпут для промпта (без halign='center', так как он мультилинейный)
+        default_cam_prompt = "Что изображено в этой зоне поиска?"
+        saved_cam_prompt = str(config.get('cam_prompt') or "").strip() or default_cam_prompt
+
+        # 1. Многострочный инпут для промпта
         prompt_input = TextInput(
-            text=str(config.get('cam_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")),
+            text=saved_cam_prompt,
             multiline=True,
             size_hint_y=None,
             height=dp(70),
             font_size=sp(13),
             background_color=(0.15, 0.17, 0.22, 1),
             foreground_color=(1, 1, 1, 1),
+            halign='center',
             padding=[dp(8), dp(10), dp(8), dp(8)]
         )
         block, self.inputs['cam_prompt'] = create_setting_block("Промпт (запрос) для Gemini Vision:", prompt_input)
@@ -4737,20 +4755,29 @@ class AICameraSettingsPopup(Popup):
     def save_settings_data(self, instance):
         raw_data = {k: v.text.strip() for k, v in self.inputs.items()}
 
-        self.camera_screen_ref.ai_prompt = raw_data.get('cam_prompt',
-                                                        "Что изображено в этой зоне поиска? Опиши кратко.")
-        self.camera_screen_ref.ai_keyword = raw_data.get('wake_word_cam', "снимок")
+        default_prompt = "Что изображено в этой зоне поиска?"
+        default_keyword = "снимок"
+
+        prompt_val = raw_data.get('cam_prompt') or default_prompt
+        keyword_val = raw_data.get('wake_word_cam') or default_keyword
+
+        if getattr(self, 'camera_screen_ref', None):
+            self.camera_screen_ref.ai_prompt = prompt_val
+            self.camera_screen_ref.ai_keyword = keyword_val
 
         app = App.get_running_app()
-        if hasattr(app, 'config_data') and isinstance(app.config_data, dict):
+        if app and hasattr(app, 'config_data') and isinstance(app.config_data, dict):
             app.config_data.update({
-                "cam_prompt": self.camera_screen_ref.ai_prompt,
-                "wake_word_cam": self.camera_screen_ref.ai_keyword
+                "cam_prompt": prompt_val,
+                "wake_word_cam": keyword_val
             })
             if hasattr(app, 'save_config'):
                 app.save_config()
 
-        print("[AI CAMERA SETTINGS SAVED]:", raw_data)
+        print("[AI CAMERA SETTINGS SAVED]:", {
+            "cam_prompt": prompt_val,
+            "wake_word_cam": keyword_val
+        })
         self.dismiss()
 
 
@@ -5025,8 +5052,11 @@ class AICameraScreen(BaseScreen):
 
         app = App.get_running_app()
         cfg = getattr(app, 'config_data', {}) if app else {}
-        self.ai_prompt = cfg.get('cam_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")
-        self.ai_keyword = cfg.get('wake_word_cam', "снимок")
+        default_cam_prompt = "Что изображено в этой зоне поиска?"
+        default_cam_keyword = "снимок"
+
+        self.ai_prompt = (cfg.get('cam_prompt') or "").strip() or default_cam_prompt
+        self.ai_keyword = (cfg.get('wake_word_cam') or "").strip() or default_cam_keyword
 
     def open_settings(self, instance):
         AICameraSettingsPopup(camera_screen_ref=self).open()
@@ -5177,14 +5207,23 @@ class AICameraScreen(BaseScreen):
         self.speak_text_safely("Снимок сделан, анализирую область...")
 
         app = App.get_running_app()
+        cfg = getattr(app, "config_data", {}) if app else {}
+
+        # Берём промпт напрямую из переменной настроек (сначала из конфига приложения, затем из атрибута экрана)
+        prompt = (
+            (cfg.get("cam_prompt") if isinstance(cfg, dict) else None)
+            or getattr(self, "ai_prompt", "")
+        ).strip()
+
+        if not prompt:
+            prompt = "Что изображено в этой зоне поиска?"
 
         import threading
+        from kivy.clock import Clock
+
         def background_ai_task():
             try:
-                prompt = getattr(self, 'ai_prompt', "Что изображено в этой зоне поиска? Опиши кратко.")
-
-                # Вызываем вашу централизованную функцию отправки запроса с картинкой
-                if hasattr(app, 'send_ai_request'):
+                if app and hasattr(app, 'send_ai_request'):
                     response_text = app.send_ai_request(prompt, image_path=image_path)
                 else:
                     response_text = "Ошибка: метод отправки ИИ не найден в приложении."
@@ -5196,7 +5235,7 @@ class AICameraScreen(BaseScreen):
                 if response_text:
                     self.speak_text_safely(response_text)
                     if hasattr(self, 'show_ai_response'):
-                        self.show_ai_response(response_text)
+                        Clock.schedule_once(lambda dt, txt=response_text: self.show_ai_response(txt), 0)
             except Exception as e:
                 print(f"[AI CAMERA ERROR] Ошибка потока анализа: {e}")
                 self.speak_text_safely("Ошибка при анализе снимка")
@@ -5553,6 +5592,22 @@ class PhoneSettingsScreen(Screen):
             self.manager.current = 'main'
 
 
+PC_TEST_CONTACTS = {
+    "мама": [
+        {"name": "Мама", "number": "+77011112233", "type_str": "мобильный"},
+        {"name": "Мама", "number": "+77272223344", "type_str": "домашний"},
+    ],
+    "папа": [
+        {"name": "Папа", "number": "+77055556677", "type_str": "мобильный"},
+    ],
+    "работа": [
+        {"name": "Работа", "number": "+77055556677", "type_str": "мобильный"},
+        {"name": "Работа", "number": "+77029998877", "type_str": "мобильный"},
+        {"name": "Работа", "number": "+77273334455", "type_str": "рабочий"},
+    ],
+}
+
+
 class PhoneAssistantManager:
     def __init__(self):
         self.is_waiting_for_call_target = False
@@ -5595,7 +5650,7 @@ class PhoneAssistantManager:
 
             if hasattr(self.app_instance, 'show_incoming_call_ui'):
                 self.app_instance.show_incoming_call_ui(contact_name, number)
-            else:
+            elif hasattr(self.app_instance, 'update_current_screen_status'):
                 self.app_instance.update_current_screen_status(
                     f"{display_text} («Алло» / «Сброс»)",
                     color=(1.0, 0.5, 0.2, 1)
@@ -5609,7 +5664,7 @@ class PhoneAssistantManager:
 
             if hasattr(self.app_instance, 'hide_incoming_call_ui'):
                 self.app_instance.hide_incoming_call_ui()
-            else:
+            elif hasattr(self.app_instance, 'update_current_screen_status'):
                 self.app_instance.update_current_screen_status(
                     "Ассистент: Ожидание",
                     color=(0.6, 0.6, 0.6, 1)
@@ -5629,93 +5684,132 @@ class PhoneAssistantManager:
 
         print("[TELEPHONY] Режимы ожидания сброшены.")
 
+    def _build_pc_matches(self, name_query):
+        """Поиск тестовых контактов на ПК в том же формате, что и на Android"""
+        q = name_query.lower().strip()
+        matches = []
+
+        for key, items in PC_TEST_CONTACTS.items():
+            for item in items:
+                if q in key.lower() or q in item["name"].lower():
+                    matches.append(dict(item))
+
+        unique_dict = {item["number"]: item for item in matches}
+        return list(unique_dict.values())
+
     def get_phone_number_by_name(self, name_query):
         """Регистронезависимый поиск с возвратом списка для диалога выбора"""
         if not name_query:
-            return ""
+            return None
 
         phone_number = name_query.strip()
         digits_only = "".join([c for c in phone_number if c.isdigit()])
         if len(digits_only) >= 3:
             return phone_number  # Передан готовый номер телефона
 
-        if platform == 'android':
-            try:
-                ContactsContract = autoclass('android.provider.ContactsContract$CommonDataKinds$Phone')
-                context = PythonActivity.mActivity
-                content_resolver = context.getContentResolver()
+        # 1. Тестовая база контактов на ПК
+        if platform != 'android':
+            found_numbers = self._build_pc_matches(name_query)
+            if not found_numbers:
+                print(f"[PC SIMULATION CONTACTS] Контакт '{name_query}' не найден в тестовой базе.")
+                return None
 
-                uri = ContactsContract.CONTENT_URI
-                projection = [
-                    ContactsContract.DISPLAY_NAME,
-                    ContactsContract.NUMBER,
-                    ContactsContract.TYPE
-                ]
+            if len(found_numbers) == 1:
+                return found_numbers[0]['number']
 
-                # Регистронезависимый поиск через LOWER()
-                selection = f"LOWER({ContactsContract.DISPLAY_NAME}) LIKE ?"
-                query_lower = f"%{name_query.lower()}%"
-                selection_args = [query_lower]
+            self.pending_choices = found_numbers
+            self.is_waiting_for_number_choice = True
 
-                cursor = content_resolver.query(uri, projection, selection, selection_args, None)
+            types_desc = ", ".join([item['type_str'] for item in found_numbers])
+            prompt = f"У абонента {found_numbers[0]['name']} несколько номеров: {types_desc}. Какой набрать?"
+            print(f"[PC SIMULATION TELEPHONY CHOICE] {prompt}")
+            self.speak_text(prompt)
 
-                found_numbers = []
-                if cursor:
-                    while cursor.moveToNext():
-                        name_idx = cursor.getColumnIndex(ContactsContract.DISPLAY_NAME)
-                        num_idx = cursor.getColumnIndex(ContactsContract.NUMBER)
-                        type_idx = cursor.getColumnIndex(ContactsContract.TYPE)
+            if self.app_instance and hasattr(self.app_instance, 'show_number_choice_popup'):
+                Clock.schedule_once(
+                    lambda dt: self.app_instance.show_number_choice_popup(
+                        found_numbers[0]['name'], found_numbers
+                    ), 0
+                )
+            return None
 
-                        contact_name = cursor.getString(name_idx)
-                        number = cursor.getString(num_idx)
-                        num_type = cursor.getInt(type_idx)
+        # 2. Реальная адресная книга на Android
+        try:
+            ContactsContract = autoclass('android.provider.ContactsContract$CommonDataKinds$Phone')
+            context = PythonActivity.mActivity
+            content_resolver = context.getContentResolver()
 
-                        # Расшифровываем тип номера
+            uri = ContactsContract.CONTENT_URI
+            projection = [
+                ContactsContract.DISPLAY_NAME,
+                ContactsContract.NUMBER,
+                ContactsContract.TYPE
+            ]
+
+            # Регистронезависимый поиск через LOWER()
+            selection = f"LOWER({ContactsContract.DISPLAY_NAME}) LIKE ?"
+            query_lower = f"%{name_query.lower()}%"
+            selection_args = [query_lower]
+
+            cursor = content_resolver.query(uri, projection, selection, selection_args, None)
+
+            found_numbers = []
+            if cursor:
+                while cursor.moveToNext():
+                    name_idx = cursor.getColumnIndex(ContactsContract.DISPLAY_NAME)
+                    num_idx = cursor.getColumnIndex(ContactsContract.NUMBER)
+                    type_idx = cursor.getColumnIndex(ContactsContract.TYPE)
+
+                    contact_name = cursor.getString(name_idx)
+                    number = cursor.getString(num_idx)
+                    num_type = cursor.getInt(type_idx)
+
+                    # Расшифровываем тип номера
+                    type_name = "мобильный"
+                    if num_type == 1:
+                        type_name = "домашний"
+                    elif num_type == 2:
                         type_name = "мобильный"
-                        if num_type == 1:
-                            type_name = "домашний"
-                        elif num_type == 2:
-                            type_name = "мобильный"
-                        elif num_type == 3:
-                            type_name = "рабочий"
+                    elif num_type == 3:
+                        type_name = "рабочий"
 
-                        found_numbers.append({'name': contact_name, 'number': number, 'type_str': type_name})
-                    cursor.close()
+                    found_numbers.append({'name': contact_name, 'number': number, 'type_str': type_name})
+                cursor.close()
 
-                if found_numbers:
-                    # Уникализируем номера, чтобы избежать дублей
-                    unique_dict = {item['number']: item for item in found_numbers}
-                    found_numbers = list(unique_dict.values())
+            if found_numbers:
+                # Уникализируем номера, чтобы избежать дублей
+                unique_dict = {item['number']: item for item in found_numbers}
+                found_numbers = list(unique_dict.values())
 
-                    print(f"[CONTACTS] Найдено уникальных номеров для '{name_query}': {len(found_numbers)}")
+                print(f"[CONTACTS] Найдено уникальных номеров для '{name_query}': {len(found_numbers)}")
 
-                    if len(found_numbers) == 1:
-                        return found_numbers[0]['number']
-                    else:
-                        # Сохраняем варианты для интерактивного выбора голосом
-                        self.pending_choices = found_numbers
-                        self.is_waiting_for_number_choice = True
-
-                        types_desc = ", ".join([item['type_str'] for item in found_numbers])
-                        prompt = f"У абонента {found_numbers[0]['name']} несколько номеров: {types_desc}. Какой набрать?"
-                        print(f"[TELEPHONY CHOICE] {prompt}")
-                        self.speak_text(prompt)
-
-                        # АВТОМАТИЧЕСКИ ОТКРЫВАЕМ ВИЗУАЛЬНЫЙ ПОПАП С КНОПКАМИ НА ГЛАВНОМ ПОТОКЕ
-                        if self.app_instance and hasattr(self.app_instance, 'show_number_choice_popup'):
-                            Clock.schedule_once(
-                                lambda dt: self.app_instance.show_number_choice_popup(
-                                    found_numbers[0]['name'], found_numbers
-                                ), 0
-                            )
-
-                        return None  # Ждем ответа пользователя по номеру или клику
+                if len(found_numbers) == 1:
+                    return found_numbers[0]['number']
                 else:
-                    print(f"[CONTACTS] Контакт '{name_query}' не найден в записной книжке.")
-            except Exception as e:
-                print(f"[CONTACTS ERROR]: {e}")
+                    # Сохраняем варианты для интерактивного выбора голосом
+                    self.pending_choices = found_numbers
+                    self.is_waiting_for_number_choice = True
 
-        return phone_number
+                    types_desc = ", ".join([item['type_str'] for item in found_numbers])
+                    prompt = f"У абонента {found_numbers[0]['name']} несколько номеров: {types_desc}. Какой набрать?"
+                    print(f"[TELEPHONY CHOICE] {prompt}")
+                    self.speak_text(prompt)
+
+                    # АВТОМАТИЧЕСКИ ОТКРЫВАЕМ ВИЗУАЛЬНЫЙ ПОПАП С КНОПКАМИ НА ГЛАВНОМ ПОТОКЕ
+                    if self.app_instance and hasattr(self.app_instance, 'show_number_choice_popup'):
+                        Clock.schedule_once(
+                            lambda dt: self.app_instance.show_number_choice_popup(
+                                found_numbers[0]['name'], found_numbers
+                            ), 0
+                        )
+
+                    return None  # Ждем ответа пользователя по номеру или клику
+            else:
+                print(f"[CONTACTS] Контакт '{name_query}' не найден в записной книжке.")
+        except Exception as e:
+            print(f"[CONTACTS ERROR]: {e}")
+
+        return None
 
     def handle_number_choice(self, user_speech):
         """Обрабатывает ответ пользователя («мобильный», «рабочий», «первый»)"""
@@ -5753,25 +5847,41 @@ class PhoneAssistantManager:
             self._start_call_action(selected_item['number'], selected_item['name'])
             return True
         else:
-            warning_msg = "Не понял, какой номер набрать. Скажите: мобильный или рабочий, либо выберите на экране."
+            warning_msg = "Не поняла, какой номер набрать. Скажите: мобильный или рабочий, либо выберите на экране."
             print(f"[TELEPHONY CHOICE WARNING] {warning_msg}")
             self.speak_text(warning_msg)
             return True
 
     def execute_outgoing_call(self, query_target):
-        """Запуск исходящего вызова с проверкой контактов и озвучкой"""
+        """Запуск исходящего вызова с проверкой контактов и возвратом в режим ожидания при ошибке"""
         phone_number = self.get_phone_number_by_name(query_target)
 
-        # Если сработал диалог выбора нескольких номеров, phone_number будет None — прерываем досрочно
+        # Если открыт выбор из нескольких номеров — ждём ответ пользователя
         if self.is_waiting_for_number_choice:
             return
 
         if not phone_number or any(c.isalpha() for c in phone_number):
             error_msg = f"Контакт {query_target} не найден"
             print(f"[TELEPHONY ERROR] {error_msg}")
+
+            # Переводим телефонию и ассистента обратно в ждущий режим
+            self.cancel_call_waiting()
+            if self.app_instance:
+                if hasattr(self.app_instance, 'is_waiting_for_call_target'):
+                    self.app_instance.is_waiting_for_call_target = False
+                if hasattr(self.app_instance, 'is_waiting_for_number_choice'):
+                    self.app_instance.is_waiting_for_number_choice = False
+                if hasattr(self.app_instance, 'hide_incoming_call_ui'):
+                    Clock.schedule_once(lambda dt: self.app_instance.hide_incoming_call_ui(), 0)
+                if hasattr(self.app_instance, 'update_current_screen_status'):
+                    Clock.schedule_once(
+                        lambda dt: self.app_instance.update_current_screen_status(
+                            "Ассистент: Ожидание",
+                            color=(0.7, 0.7, 0.7, 1)
+                        ), 0
+                    )
+
             self.speak_text(error_msg)
-            if self.app_instance and hasattr(self.app_instance, 'update_current_screen_status'):
-                self.app_instance.update_current_screen_status(error_msg, color=(1, 0.3, 0.3, 1))
             return
 
         contact_name = self.get_contact_name_by_number(phone_number)
@@ -5785,7 +5895,10 @@ class PhoneAssistantManager:
         print(f"[TELEPHONY] Набор номера: {contact_name} ({phone_number})")
 
         if self.app_instance and hasattr(self.app_instance, 'show_outgoing_call_ui'):
-            self.app_instance.show_outgoing_call_ui(contact_name, phone_number)
+            Clock.schedule_once(
+                lambda dt, name=contact_name, num=phone_number: self.app_instance.show_outgoing_call_ui(name, num),
+                0
+            )
 
         self.speak_text(f"Звоню абоненту {contact_name}")
 
@@ -5861,8 +5974,17 @@ class PhoneAssistantManager:
             print("[PC SIMULATION] Имитация сброса звонка")
 
     def get_contact_name_by_number(self, phone_number):
-        """Определяет имя контакта по входящему номеру"""
-        if not phone_number or platform != 'android':
+        """Определяет имя контакта по номеру (на Android — ContactsContract, на ПК — тестовая база)"""
+        if not phone_number:
+            return ""
+
+        if platform != 'android':
+            clean_target = "".join(c for c in str(phone_number) if c.isdigit())
+            for items in PC_TEST_CONTACTS.values():
+                for item in items:
+                    clean_num = "".join(c for c in item["number"] if c.isdigit())
+                    if clean_target and clean_target in clean_num:
+                        return item["name"]
             return phone_number
 
         try:
@@ -5888,7 +6010,29 @@ class PhoneAssistantManager:
         return phone_number
 
     def speak_text(self, text):
-        """Безопасная озвучка через plyer.tts"""
+        """Озвучка текста через голосовой движок ассистента со всеми правилами очистки"""
+        if not text or not str(text).strip():
+            return
+
+        print(f"[TELEPHONY SPEECH REQUEST]: {text}")
+
+        # 1. Пытаемся найти метод озвучки в главном приложении или в его ассистенте
+        assistant_ref = None
+        if self.app_instance:
+            if hasattr(self.app_instance, 'speak'):
+                assistant_ref = self.app_instance
+            elif hasattr(self.app_instance, 'assistant') and hasattr(self.app_instance.assistant, 'speak'):
+                assistant_ref = self.app_instance.assistant
+
+        # 2. Если нашли основной метод speak — используем его (он сам применит clean_text_for_tts)
+        if assistant_ref:
+            try:
+                assistant_ref.speak(text)
+                return
+            except Exception as e:
+                print(f"[TELEPHONY ASSISTANT SPEAK ERROR]: {e}")
+
+        # 3. Запасной вариант через plyer, если ссылка на ассистента недоступна
         cleaned_text = text
         if self.app_instance and hasattr(self.app_instance, 'clean_text_for_tts'):
             try:
@@ -5896,7 +6040,6 @@ class PhoneAssistantManager:
             except Exception:
                 pass
 
-        print(f"[TELEPHONY SPEECH]: {cleaned_text}")
         if platform == 'android':
             try:
                 from plyer import tts
@@ -5908,85 +6051,10 @@ class PhoneAssistantManager:
 
 
 
-# Класс кликабельной картинки-кнопки
+# Класс кликабельной картинки-кнопки (наследуем от Kivy Image)
 class ImageButton(ButtonBehavior, Image):
     pass
 
-
-def show_incoming_call_ui(self, contact_name, number):
-    # Закрываем старое окно, если оно уже висело
-    self.hide_incoming_call_ui()
-
-    # Основной контейнер с отступами
-    content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
-
-    # Рисуем полупрозрачный темный закругленный фон внутри попапа
-    with content.canvas.before:
-        Color(0.12, 0.12, 0.12, 0.9)
-        self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
-    content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
-                 size=lambda *x: setattr(self.bg_rect, 'size', content.size))
-
-    # Текст с информацией о звонящем (сохраняем ссылку как self.call_status_lbl для таймера)
-    self.call_status_lbl = Label(
-        text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
-        markup=True,
-        font_size=sp(20),
-        color=(1, 1, 1, 1),
-        halign='center',
-        valign='middle'
-    )
-    self.call_status_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
-    content.add_widget(self.call_status_lbl)
-
-    # Блок для круглых кнопок
-    btn_layout = BoxLayout(
-        orientation='horizontal',
-        size_hint_y=None,
-        height=dp(75),
-        spacing=dp(40)
-    )
-    btn_layout.padding = [dp(60), 0, dp(60), 0]
-
-    # Зеленая кнопка ответа («Алло») -> принимает вызов и запускает таймер на экране
-    accept_btn = ImageButton(
-        source='green.png',
-        size_hint=(None, None),
-        size=(dp(70), dp(70))
-    )
-    accept_btn.bind(on_release=lambda x: [
-        self.telephony.answer_incoming_call(),
-        self.start_call_timer(self.call_status_lbl)
-    ])
-
-    # Красная кнопка сброса («Сброс») -> останавливает таймер, сбрасывает вызов и закрывает окно
-    reject_btn = ImageButton(
-        source='red.png',
-        size_hint=(None, None),
-        size=(dp(70), dp(70))
-    )
-    reject_btn.bind(on_release=lambda x: [
-        self.stop_call_timer(),
-        self.telephony.reject_incoming_call(),
-        self.hide_incoming_call_ui()
-    ])
-
-    btn_layout.add_widget(accept_btn)
-    btn_layout.add_widget(reject_btn)
-    content.add_widget(btn_layout)
-
-    # Сам Popup
-    self.incoming_popup = Popup(
-        title='',
-        content=content,
-        size_hint=(0.85, 0.42),
-        auto_dismiss=False,
-        separator_height=0,
-        background=''
-    )
-
-    self.incoming_popup.background_color = (0, 0, 0, 0.6)
-    self.incoming_popup.open()
 
 class SmartApp(App):
     def __init__(self, **kwargs):
@@ -5997,9 +6065,11 @@ class SmartApp(App):
         self.lamp_objects = []
         self.assistant = None
         self.assistant_event = None
-        # Подключаем вынесенный менеджер Live-диалога
+        self.incoming_popup = None
+        self.timer_event = None
+        self.timer_label_ref = None
+        self.call_seconds = 0
         self.live_manager = GeminiLiveManager(self)
-        # --- ПОДКЛЮЧАЕМ МЕНЕДЖЕР ТЕЛЕФОНИИ ---
         self.telephony = PhoneAssistantManager()
 
     @property
@@ -6011,11 +6081,8 @@ class SmartApp(App):
         self.live_manager.is_live_active = value
 
     def on_start(self):
-        # Инициализируем голосового ассистента
         self.init_assistant()
-
-        # Запускаем фоновое отслеживание звонков и регистрацию BroadcastReceiver
-        if hasattr(self, 'telephony'):
+        if self.telephony:
             self.telephony.init_receiver(self)
 
     def load_config(self):
@@ -6040,25 +6107,81 @@ class SmartApp(App):
         sm.add_widget(SmartHomeScreen(name='smarthome'))
         sm.add_widget(AICameraScreen(name='ai_camera'))
         sm.add_widget(PhoneSettingsScreen(name='phone_settings'))
-
-        # Инициализируем менеджер телефонии и запускаем фоновый прослушиватель звонков
-        self.telephony = PhoneAssistantManager()
-        self.telephony.init_receiver(self)
-
         return sm
 
-    def show_number_choice_popup(self, contact_name, choices):
-        """Показывает визуальное окно выбора номера при нескольких совпадениях"""
+    def _clear_who_to_call_labels(self, widget):
+        if not widget:
+            return
+        if hasattr(widget, "text") and isinstance(widget.text, str):
+            if "кому позвонить" in widget.text.lower():
+                widget.text = ""
+        for child in getattr(widget, "children", []):
+            self._clear_who_to_call_labels(child)
+
+    def _finalize_call_dismissal(self, reject_call=False):
+        """Останавливает таймер, сбрасывает состояния звонка, закрывает попап и возвращает статус"""
+        self.stop_call_timer()
+
+        if hasattr(self, "telephony") and self.telephony:
+            self.telephony.is_incoming_active = False
+            if reject_call:
+                self.telephony.reject_incoming_call()
+            self.telephony.cancel_call_waiting()
+
+        for attr in ("is_waiting_for_call_target", "is_waiting_for_number_choice"):
+            if hasattr(self, attr):
+                setattr(self, attr, False)
+
+        if hasattr(self, "assistant") and self.assistant:
+            if hasattr(self.assistant, "is_waiting_for_call_target"):
+                self.assistant.is_waiting_for_call_target = False
+
         self.hide_incoming_call_ui()
 
-        content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(12))
+        hint = self.get_current_wake_hint() if hasattr(self, "get_current_wake_hint") else "алиса"
+        idle_text = f"Ассистент: Ожидание («{hint}»)"
+        idle_color = (0.6, 0.6, 0.6, 1)
 
-        from kivy.graphics import Color, RoundedRectangle
+        if hasattr(self, "update_current_screen_status"):
+            Clock.schedule_once(
+                lambda dt: self.update_current_screen_status(idle_text, color=idle_color),
+                0
+            )
+        elif self.root and hasattr(self.root, "current_screen") and self.root.current_screen:
+            cur = self.root.current_screen
+            if hasattr(cur, "update_status"):
+                Clock.schedule_once(lambda dt: cur.update_status(idle_text, idle_color), 0)
+
+    def _build_popup_content(self, padding=(25, 25, 25, 25), spacing=15):
+        content = BoxLayout(
+            orientation='vertical',
+            padding=[dp(p) for p in padding],
+            spacing=dp(spacing)
+        )
         with content.canvas.before:
             Color(0.12, 0.12, 0.12, 0.95)
-            self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
-        content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
-                     size=lambda *x: setattr(self.bg_rect, 'size', content.size))
+            bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
+        content.bind(
+            pos=lambda *x: setattr(bg_rect, 'pos', content.pos),
+            size=lambda *x: setattr(bg_rect, 'size', content.size)
+        )
+        return content
+
+    def _open_call_popup(self, content, size_hint_y):
+        self.incoming_popup = Popup(
+            title='',
+            content=content,
+            size_hint=(0.85, size_hint_y),
+            auto_dismiss=False,
+            separator_height=0,
+            background=''
+        )
+        self.incoming_popup.background_color = (0, 0, 0, 0.6)
+        self.incoming_popup.open()
+
+    def show_number_choice_popup(self, contact_name, choices):
+        self.hide_incoming_call_ui()
+        content = self._build_popup_content(spacing=12)
 
         title_lbl = Label(
             text=f"[b]У абонента {contact_name}[/b]\nнесколько номеров:",
@@ -6066,12 +6189,13 @@ class SmartApp(App):
             font_size=sp(18),
             color=(1, 1, 1, 1),
             halign='center',
-            valign='middle'
+            valign='middle',
+            size_hint_y=None,
+            height=dp(55)
         )
         title_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
         content.add_widget(title_lbl)
 
-        # Создаем интерактивную кнопку для каждого найденного номера
         for item in choices:
             btn_text = f"{item['type_str'].capitalize()}: {item['number']}"
             choice_btn = Button(
@@ -6082,7 +6206,8 @@ class SmartApp(App):
             )
             choice_btn.bind(on_release=lambda x, num=item['number'], name=item['name']: [
                 self.hide_incoming_call_ui(),
-                self.telephony.cancel_call_waiting(),
+                setattr(self.telephony, 'is_waiting_for_number_choice', False),
+                setattr(self.telephony, 'pending_choices', []),
                 self.telephony._start_call_action(num, name)
             ])
             content.add_widget(choice_btn)
@@ -6093,25 +6218,12 @@ class SmartApp(App):
             height=dp(45),
             background_color=(0.8, 0.3, 0.3, 1)
         )
-        cancel_btn.bind(on_release=lambda x: [
-            self.telephony.cancel_call_waiting(),
-            self.hide_incoming_call_ui()
-        ])
+        cancel_btn.bind(on_release=lambda x: self._finalize_call_dismissal(reject_call=False))
         content.add_widget(cancel_btn)
 
-        self.incoming_popup = Popup(
-            title='',
-            content=content,
-            size_hint=(0.85, 0.5),
-            auto_dismiss=False,
-            separator_height=0,
-            background=''
-        )
-        self.incoming_popup.background_color = (0, 0, 0, 0.6)
-        self.incoming_popup.open()
+        self._open_call_popup(content, min(0.85, 0.30 + len(choices) * 0.11))
 
     def start_call_timer(self, label_widget):
-        """Запускает секундомер длительности вызова"""
         self.stop_call_timer()
         self.call_seconds = 0
         self.timer_label_ref = label_widget
@@ -6126,23 +6238,14 @@ class SmartApp(App):
         self.timer_event = Clock.schedule_interval(update_timer, 1)
 
     def stop_call_timer(self):
-        """Останавливает секундомер вызова"""
-        if hasattr(self, 'timer_event') and self.timer_event:
+        if self.timer_event:
             self.timer_event.cancel()
             self.timer_event = None
         self.timer_label_ref = None
 
     def show_incoming_call_ui(self, contact_name, number):
         self.hide_incoming_call_ui()
-
-        content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
-
-        from kivy.graphics import Color, RoundedRectangle
-        with content.canvas.before:
-            Color(0.12, 0.12, 0.12, 0.9)
-            self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
-        content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
-                     size=lambda *x: setattr(self.bg_rect, 'size', content.size))
+        content = self._build_popup_content(spacing=15)
 
         self.call_status_lbl = Label(
             text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
@@ -6159,57 +6262,28 @@ class SmartApp(App):
             orientation='horizontal',
             size_hint_y=None,
             height=dp(75),
-            spacing=dp(40)
+            spacing=dp(40),
+            padding=[dp(60), 0, dp(60), 0]
         )
-        btn_layout.padding = [dp(60), 0, dp(60), 0]
 
-        accept_btn = ImageButton(
-            source='green.png',
-            size_hint=(None, None),
-            size=(dp(70), dp(70))
-        )
+        accept_btn = ImageButton(source='green.png', size_hint=(None, None), size=(dp(70), dp(70)))
         accept_btn.bind(on_release=lambda x: [
             self.telephony.answer_incoming_call(),
             self.start_call_timer(self.call_status_lbl)
         ])
 
-        reject_btn = ImageButton(
-            source='red.png',
-            size_hint=(None, None),
-            size=(dp(70), dp(70))
-        )
-        reject_btn.bind(on_release=lambda x: [
-            self.stop_call_timer(),
-            self.telephony.reject_incoming_call(),
-            self.hide_incoming_call_ui()
-        ])
+        reject_btn = ImageButton(source='red.png', size_hint=(None, None), size=(dp(70), dp(70)))
+        reject_btn.bind(on_release=lambda x: self._finalize_call_dismissal(reject_call=True))
 
         btn_layout.add_widget(accept_btn)
         btn_layout.add_widget(reject_btn)
         content.add_widget(btn_layout)
 
-        self.incoming_popup = Popup(
-            title='',
-            content=content,
-            size_hint=(0.85, 0.42),
-            auto_dismiss=False,
-            separator_height=0,
-            background=''
-        )
-        self.incoming_popup.background_color = (0, 0, 0, 0.6)
-        self.incoming_popup.open()
+        self._open_call_popup(content, 0.42)
 
     def show_outgoing_call_ui(self, contact_name, number):
-        """Окно исходящего вызова внутри приложения"""
         self.hide_incoming_call_ui()
-        content = BoxLayout(orientation='vertical', padding=dp(25), spacing=dp(15))
-
-        from kivy.graphics import Color, RoundedRectangle
-        with content.canvas.before:
-            Color(0.12, 0.12, 0.12, 0.95)
-            self.bg_rect = RoundedRectangle(size=content.size, pos=content.pos, radius=[dp(20)])
-        content.bind(pos=lambda *x: setattr(self.bg_rect, 'pos', content.pos),
-                     size=lambda *x: setattr(self.bg_rect, 'size', content.size))
+        content = self._build_popup_content(spacing=15)
 
         self.call_status_lbl = Label(
             text=f"[b]Исходящий вызов[/b]\n{contact_name}\n{number}",
@@ -6226,40 +6300,22 @@ class SmartApp(App):
             orientation='horizontal',
             size_hint_y=None,
             height=dp(75),
-            spacing=dp(40)
+            spacing=dp(40),
+            padding=[dp(110), 0, dp(110), 0]
         )
-        btn_layout.padding = [dp(110), 0, dp(110), 0]
 
-        reject_btn = ImageButton(
-            source='red.png',
-            size_hint=(None, None),
-            size=(dp(70), dp(70))
-        )
-        reject_btn.bind(on_release=lambda x: [
-            self.stop_call_timer(),
-            self.telephony.reject_incoming_call(),
-            self.hide_incoming_call_ui()
-        ])
+        reject_btn = ImageButton(source='red.png', size_hint=(None, None), size=(dp(70), dp(70)))
+        reject_btn.bind(on_release=lambda x: self._finalize_call_dismissal(reject_call=True))
 
         btn_layout.add_widget(reject_btn)
         content.add_widget(btn_layout)
 
-        self.incoming_popup = Popup(
-            title='',
-            content=content,
-            size_hint=(0.85, 0.42),
-            auto_dismiss=False,
-            separator_height=0,
-            background=''
-        )
-        self.incoming_popup.background_color = (0, 0, 0, 0.6)
-        self.incoming_popup.open()
-
+        self._open_call_popup(content, 0.42)
         self.start_call_timer(self.call_status_lbl)
 
     def hide_incoming_call_ui(self):
         self.stop_call_timer()
-        if hasattr(self, 'incoming_popup') and self.incoming_popup:
+        if self.incoming_popup:
             try:
                 self.incoming_popup.dismiss()
             except Exception as e:
@@ -6267,20 +6323,27 @@ class SmartApp(App):
             self.incoming_popup = None
 
     def handle_user_query(self, query):
-        # Показываем статус "Думаю..." через метод моста
+        if not query or not str(query).strip():
+            return
+
         self.update_current_screen_status("Думаю...", (0.2, 0.7, 0.9, 1))
-        # Запускаем сетевой запрос в фоновом потоке
-        threading.Thread(target=self._send_to_ai_background, args=(query,), daemon=True).start()
+        threading.Thread(
+            target=self._send_to_ai_background,
+            args=(str(query).strip(),),
+            daemon=True,
+        ).start()
 
     def _send_to_ai_background(self, query):
         try:
             ai_data = self.init_ai_client()
             if not ai_data or ai_data.get("provider") != "gemini":
-                Clock.schedule_once(lambda dt: self.show_ai_response("Ошибка: ИИ клиент не настроен"))
+                Clock.schedule_once(
+                    lambda dt: self.show_ai_response("Ошибка: ИИ клиент не настроен", speak=False), 0
+                )
                 return
 
             client = ai_data["client"]
-            models_to_try = ai_data.get("models_to_try", [ai_data["text_model"]])
+            models_to_try = ai_data.get("models_to_try") or [ai_data.get("text_model", "gemini-2.0-flash")]
 
             response_text = None
             for model_name in models_to_try:
@@ -6290,26 +6353,37 @@ class SmartApp(App):
                         model=model_name,
                         contents=query,
                     )
-                    if response and response.text:
-                        response_text = response.text.strip()
-                        break
+                    if response and getattr(response, "text", None):
+                        candidate = response.text.strip()
+                        if candidate:
+                            response_text = candidate
+                            break
                 except Exception as mod_err:
                     print(f"[AI WARNING] Модель {model_name} не ответила: {mod_err}")
                     continue
 
             if response_text:
-                Clock.schedule_once(lambda dt: self.show_ai_response(response_text))
+                Clock.schedule_once(
+                    lambda dt, txt=response_text: self.show_ai_response(txt, speak=True), 0
+                )
             else:
-                Clock.schedule_once(lambda dt: self.show_ai_response("Ошибка: сервер ИИ перегружен"))
+                Clock.schedule_once(
+                    lambda dt: self.show_ai_response("Ошибка: сервер ИИ перегружен", speak=False), 0
+                )
 
         except Exception as e:
             print("[AI ERROR]:", e)
-            Clock.schedule_once(lambda dt: self.show_ai_response("Ошибка связи с ИИ"))
+            Clock.schedule_once(
+                lambda dt: self.show_ai_response("Ошибка связи с ИИ", speak=False), 0
+            )
 
-    def show_ai_response(self, text):
+    def show_ai_response(self, text, speak=False):
         self.update_current_screen_status(text, (0.2, 0.85, 0.3, 1))
-        if hasattr(self, 'reset_session_timer'):
+        if hasattr(self, "reset_session_timer"):
             self.reset_session_timer()
+
+        if speak and hasattr(self, "speak_text_safely"):
+            self.speak_text_safely(text)
 
     def init_ai_client(self):
         """Финальная стабильная инициализация клиента с поддержкой автоперебора и памяти"""
@@ -6405,37 +6479,36 @@ class SmartApp(App):
                                 candidates = data.get("candidates", [])
                                 if candidates:
                                     parts = candidates[0].get("content", {}).get("parts", [])
-                                    for p in parts:
-                                        if "text" in p:
-                                            yield StreamChunk(p["text"])
+                                    merged_parts = [p["text"] for p in parts if isinstance(p, dict) and p.get("text")]
+                                    if merged_parts:
+                                        yield StreamChunk("\n".join(merged_parts))
 
-                                            # --- ЖЕСТКАЯ АВТОМАТИЧЕСКАЯ ЗАПИСЬ НА ДИСК И В ПАМЯТЬ ---
-                                            try:
-                                                cfg_path = "config.json"
-                                                file_data = {}
-                                                if os.path.exists(cfg_path):
-                                                    with open(cfg_path, 'r', encoding='utf-8') as f:
-                                                        file_data = json.load(f)
+                                        # Сохраняем рабочую модель один раз после успешного ответа
+                                        try:
+                                            cfg_path = "config.json"
+                                            file_data = {}
+                                            if os.path.exists(cfg_path):
+                                                with open(cfg_path, 'r', encoding='utf-8') as f:
+                                                    file_data = json.load(f)
 
-                                                # Обновляем все ключи моделей на рабочую победительницу
-                                                file_data['ai_model_name'] = m_name
-                                                file_data['gemini_model_name'] = m_name
-                                                provider = file_data.get('ai_provider', 'gemini').strip().lower()
-                                                file_data[f"{provider}_model_name"] = m_name
+                                            file_data['ai_model_name'] = m_name
+                                            file_data['gemini_model_name'] = m_name
+                                            provider = file_data.get('ai_provider', 'gemini').strip().lower()
+                                            file_data[f"{provider}_model_name"] = m_name
 
-                                                with open(cfg_path, 'w', encoding='utf-8') as f:
-                                                    json.dump(file_data, f, ensure_ascii=False, indent=4)
+                                            with open(cfg_path, 'w', encoding='utf-8') as f:
+                                                json.dump(file_data, f, ensure_ascii=False, indent=4)
 
-                                                # СРАЗУ ОБНОВЛЯЕМ ПАМЯТЬ ПРИЛОЖЕНИЯ БЕЗ ПЕРЕЗАПУСКА
-                                                if hasattr(self, 'app') and hasattr(self.app, 'config_data'):
-                                                    self.app.config_data.update(file_data)
+                                            if hasattr(self, 'app') and hasattr(self.app, 'config_data'):
+                                                self.app.config_data.update(file_data)
 
-                                                print(
-                                                    f"[AI AUTO-MEMORY] Модель '{m_name}' записана на диск и обновлена в памяти!")
-                                            except Exception as save_err:
-                                                print(f"[AI AUTO-MEMORY ERROR]: {save_err}")
-                                            # --------------------------------------------------------
+                                            print(
+                                                f"[AI AUTO-MEMORY] Модель '{m_name}' записана на диск и обновлена в памяти!")
+                                        except Exception as save_err:
+                                            print(f"[AI AUTO-MEMORY ERROR]: {save_err}")
                                 return
+                                            # --------------------------------------------------------
+
                             elif response.status_code in [503, 504, 429] and attempt < max_retries - 1:
                                 print(
                                     f"[AI] Модель {m_name} перегружена ({response.status_code}), попытка {attempt + 1}. Ждем {delay}с...")
@@ -6704,11 +6777,14 @@ class SmartApp(App):
             if sm and hasattr(sm, 'current') and sm.has_screen(sm.current):
                 screen = sm.get_screen(sm.current)
                 if screen and hasattr(screen, 'update_assistant_status'):
+                    text_str = str(text)
                     current_ui_text = getattr(screen, '_last_applied_status', '')
-                    if current_ui_text == text:
+                    current_ui_color = getattr(screen, '_last_applied_color', None)
+                    if current_ui_text == text_str and current_ui_color == color:
                         return
-                    screen._last_applied_status = text
-                    screen.update_assistant_status(text, color=color)
+                    screen._last_applied_status = text_str
+                    screen._last_applied_color = color
+                    screen.update_assistant_status(text_str, color=color)
         except Exception as e:
             print(f"[BRIDGE EXCEPTION]: {e}")
 
