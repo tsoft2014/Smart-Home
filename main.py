@@ -156,8 +156,10 @@ if platform == 'android':
             action = intent.getAction()
             if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
                 state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+                print(f"[RECEIVER RAW] action={action}, state={state}")
                 if state == TelephonyManager.EXTRA_STATE_RINGING:
                     incoming_number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+                    print(f"[RECEIVER RINGING] num={incoming_number}")
                     if self.callback:
                         self.callback("ringing", incoming_number)
                 elif state == TelephonyManager.EXTRA_STATE_IDLE:
