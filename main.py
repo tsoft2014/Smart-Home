@@ -100,8 +100,31 @@ AudioRecord = AudioSource = AudioFormat = None
 AudioManager = AudioTrack = None
 autoclass = None
 
+
 # 1. Единый блок инициализации Android-аудио и разрешений
+HAS_ANDROID_AUDIO = False
+
 if platform == 'android':
+    try:
+        from jnius import autoclass
+
+        AudioRecord = autoclass('android.media.AudioRecord')
+        AudioSource = autoclass('android.media.MediaRecorder$AudioSource')
+        AudioFormat = autoclass('android.media.AudioFormat')
+        AudioManager = autoclass('android.media.AudioManager')
+        AudioTrack = autoclass('android.media.AudioTrack')
+        HAS_ANDROID_AUDIO = True
+    except Exception as e:
+        print(f"[ANDROID AUDIO INIT ERROR]: {e}")
+        HAS_ANDROID_AUDIO = False
+
+
+def request_android_permissions():
+    """Вызывайте на старте приложения (например, в on_start), когда Activity готова."""
+    if platform != 'android':
+        print("[PC TEST] Пропуск запроса разрешений Android")
+        return
+
     try:
         from android.permissions import request_permissions, Permission
 
@@ -118,26 +141,15 @@ if platform == 'android':
             permissions_list.append(Permission.READ_CALL_LOG)
 
         request_permissions(permissions_list)
+        print("[ANDROID PERMISSIONS] Запрос разрешений отправлен")
     except Exception as e:
         print(f"[ANDROID PERMISSIONS ERROR]: {e}")
 
-    try:
-        from jnius import autoclass
 
-        AudioRecord = autoclass('android.media.AudioRecord')
-        AudioSource = autoclass('android.media.MediaRecorder$AudioSource')
-        AudioFormat = autoclass('android.media.AudioFormat')
-        AudioManager = autoclass('android.media.AudioManager')
-        AudioTrack = autoclass('android.media.AudioTrack')
-        HAS_ANDROID_AUDIO = True
-    except Exception as e:
-        print(f"[ANDROID AUDIO INIT ERROR]: {e}")
-        HAS_ANDROID_AUDIO = False
-else:
-    HAS_ANDROID_AUDIO = False
-
+# 2. Слушатель состояния звонков: TelephonyCallback для Android 12/13+ и заглушка для ПК
 if platform == 'android':
     from jnius import autoclass, java_method, PythonJavaClass
+
     Context = autoclass('android.content.Context')
     Intent = autoclass('android.content.Intent')
     IntentFilter = autoclass('android.content.IntentFilter')
@@ -145,36 +157,53 @@ if platform == 'android':
     PythonActivity = autoclass('org.kivy.android.PythonActivity')
     Uri = autoclass('android.net.Uri')
     KeyEvent = autoclass('android.view.KeyEvent')
+    BuildVersion = autoclass('android.os.Build$VERSION')
 
-    # Слушатель состояния звонков через TelephonyManager
-    class PhoneStateReceiver(PythonJavaClass):
-        __javainterfaces__ = ['android/telephony/PhoneStateListener']
-        __javachain__ = ['java/lang/Object']
+    class CallStateCallback(PythonJavaClass):
+        __javainterfaces__ = ['android/telephony/TelephonyCallback$CallStateListener']
+        __javacontext__ = 'app'
 
         def __init__(self, callback):
-            super(PhoneStateReceiver, self).__init__()
+            super(CallStateCallback, self).__init__()
             self.callback = callback
             self._last_state = None
 
-        @java_method('(ILjava/lang/String;)V')
-        def onCallStateChanged(self, state, incomingNumber):
-            print(f"[LISTENER RAW] state={state}, num={incomingNumber}")
+        @java_method('(I)V')
+        def onCallStateChanged(self, state):
+            print(f"[CALLBACK RAW] state={state}")
             if state == self._last_state:
                 return
             self._last_state = state
 
             if state == TelephonyManager.CALL_STATE_RINGING:
-                print(f"[LISTENER RINGING] num={incomingNumber}")
+                print("[CALLBACK RINGING]")
                 if self.callback:
-                    self.callback("ringing", incomingNumber)
+                    self.callback("ringing", None)
             elif state == TelephonyManager.CALL_STATE_IDLE:
-                print("[LISTENER IDLE]")
+                print("[CALLBACK IDLE]")
                 if self.callback:
                     self.callback("idle", None)
 else:
-    class PhoneStateReceiver:
+    class CallStateCallback:
         def __init__(self, callback):
             self.callback = callback
+            self._last_state = None
+
+        def simulate_state(self, state_name, incoming_number=None):
+            if state_name == self._last_state:
+                return
+            self._last_state = state_name
+            print(f"[PC TEST] state={state_name}, num={incoming_number}")
+            if self.callback:
+                self.callback(state_name, incoming_number)
+
+
+# Проверка на ПК при запуске файла напрямую
+if __name__ == '__main__' and platform != 'android':
+    request_android_permissions()
+    cb = CallStateCallback(lambda s, n: print(f"[PC CALLBACK] state={s}, num={n}"))
+    cb.simulate_state("ringing", "+77001234567")
+    cb.simulate_state("idle", None)
 
 # Безопасный импорт sounddevice только для ПК
 HAS_SOUNDDEVICE = False
@@ -5626,25 +5655,39 @@ class PhoneAssistantManager:
         self.app_instance = None
 
     def init_receiver(self, app_instance):
-        """Регистрация слушателя состояния звонков через TelephonyManager"""
+        """Регистрация слушателя состояния звонков (TelephonyCallback для API 31+, PhoneStateListener для старых API)"""
         self.app_instance = app_instance
+
+        def on_state(state, num):
+            Clock.schedule_once(
+                lambda dt, s=state, n=num: self.handle_phone_state(s, n), 0
+            )
+
         if platform == 'android':
             try:
                 activity = PythonActivity.mActivity
                 telephony_manager = activity.getSystemService(Context.TELEPHONY_SERVICE)
                 self._telephony_manager = telephony_manager
-                self.receiver = PhoneStateReceiver(
-                    lambda state, num: Clock.schedule_once(
-                        lambda dt, s=state, n=num: self.handle_phone_state(s, n), 0
-                    )
-                )
-                listener_cls = globals().get("PhoneStateListener")
-                listen_call_state = getattr(listener_cls, "LISTEN_CALL_STATE", 32) if listener_cls else 32
-                telephony_manager.listen(self.receiver, listen_call_state)
-                print("[TELEPHONY] PhoneStateListener успешно зарегистрирован!")
+
+                if BuildVersion.SDK_INT >= 31:
+                    self._call_callback = CallStateCallback(on_state)
+                    executor = activity.getMainExecutor()
+                    telephony_manager.registerTelephonyCallback(executor, self._call_callback)
+                    print("[TELEPHONY] TelephonyCallback успешно зарегистрирован!")
+                else:
+                    phone_state_receiver_cls = globals().get("PhoneStateReceiver")
+                    if phone_state_receiver_cls:
+                        self.receiver = phone_state_receiver_cls(on_state)
+                        listener_cls = globals().get("PhoneStateListener")
+                        listen_call_state = getattr(listener_cls, "LISTEN_CALL_STATE", 32) if listener_cls else 32
+                        telephony_manager.listen(self.receiver, listen_call_state)
+                        print("[TELEPHONY] PhoneStateListener успешно зарегистрирован!")
+                    else:
+                        print("[TELEPHONY] PhoneStateReceiver не определён для SDK < 31")
             except Exception as e:
                 print(f"[TELEPHONY LISTENER ERROR]: {e}")
         else:
+            self._call_callback = CallStateCallback(on_state)
             print("[PC SIMULATION] Инициализация симуляции слушателя звонков")
 
     def handle_phone_state(self, state, number):
