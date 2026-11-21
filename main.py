@@ -105,15 +105,19 @@ if platform == 'android':
     try:
         from android.permissions import request_permissions, Permission
 
-        request_permissions([
+        permissions_list = [
             Permission.RECORD_AUDIO,
             Permission.CAMERA,
             Permission.WRITE_EXTERNAL_STORAGE,
             Permission.READ_EXTERNAL_STORAGE,
             Permission.READ_CONTACTS,
             Permission.READ_PHONE_STATE,
-            Permission.CALL_PHONE
-        ])
+            Permission.CALL_PHONE,
+        ]
+        if hasattr(Permission, "READ_CALL_LOG"):
+            permissions_list.append(Permission.READ_CALL_LOG)
+
+        request_permissions(permissions_list)
     except Exception as e:
         print(f"[ANDROID PERMISSIONS ERROR]: {e}")
 
@@ -142,29 +146,31 @@ if platform == 'android':
     Uri = autoclass('android.net.Uri')
     KeyEvent = autoclass('android.view.KeyEvent')
 
-    # Нативный Java-ресивер для отслеживания звонков
+    # Слушатель состояния звонков через TelephonyManager
     class PhoneStateReceiver(PythonJavaClass):
-        __javainterfaces__ = ['android/content/BroadcastReceiver']
+        __javainterfaces__ = ['android/telephony/PhoneStateListener']
         __javachain__ = ['java/lang/Object']
 
         def __init__(self, callback):
             super(PhoneStateReceiver, self).__init__()
             self.callback = callback
+            self._last_state = None
 
-        @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
-        def onReceive(self, context, intent):
-            action = intent.getAction()
-            if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
-                state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
-                print(f"[RECEIVER RAW] action={action}, state={state}")
-                if state == TelephonyManager.EXTRA_STATE_RINGING:
-                    incoming_number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
-                    print(f"[RECEIVER RINGING] num={incoming_number}")
-                    if self.callback:
-                        self.callback("ringing", incoming_number)
-                elif state == TelephonyManager.EXTRA_STATE_IDLE:
-                    if self.callback:
-                        self.callback("idle", None)
+        @java_method('(ILjava/lang/String;)V')
+        def onCallStateChanged(self, state, incomingNumber):
+            print(f"[LISTENER RAW] state={state}, num={incomingNumber}")
+            if state == self._last_state:
+                return
+            self._last_state = state
+
+            if state == TelephonyManager.CALL_STATE_RINGING:
+                print(f"[LISTENER RINGING] num={incomingNumber}")
+                if self.callback:
+                    self.callback("ringing", incomingNumber)
+            elif state == TelephonyManager.CALL_STATE_IDLE:
+                print("[LISTENER IDLE]")
+                if self.callback:
+                    self.callback("idle", None)
 else:
     class PhoneStateReceiver:
         def __init__(self, callback):
@@ -5620,22 +5626,24 @@ class PhoneAssistantManager:
         self.app_instance = None
 
     def init_receiver(self, app_instance):
-        """Регистрация динамического BroadcastReceiver с изоляцией в главный поток (Clock)"""
+        """Регистрация слушателя состояния звонков через TelephonyManager"""
         self.app_instance = app_instance
         if platform == 'android':
             try:
                 activity = PythonActivity.mActivity
+                telephony_manager = activity.getSystemService(Context.TELEPHONY_SERVICE)
+                self._telephony_manager = telephony_manager
                 self.receiver = PhoneStateReceiver(
-                    lambda state, num: Clock.schedule_once(lambda dt: self.handle_phone_state(state, num), 0)
+                    lambda state, num: Clock.schedule_once(
+                        lambda dt, s=state, n=num: self.handle_phone_state(s, n), 0
+                    )
                 )
-
-                intent_filter = IntentFilter()
-                intent_filter.addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
-
-                activity.registerReceiver(self.receiver, intent_filter)
-                print("[TELEPHONY] Фоновый BroadcastReceiver успешно зарегистрирован!")
+                listener_cls = globals().get("PhoneStateListener")
+                listen_call_state = getattr(listener_cls, "LISTEN_CALL_STATE", 32) if listener_cls else 32
+                telephony_manager.listen(self.receiver, listen_call_state)
+                print("[TELEPHONY] PhoneStateListener успешно зарегистрирован!")
             except Exception as e:
-                print(f"[TELEPHONY RECEIVER ERROR]: {e}")
+                print(f"[TELEPHONY LISTENER ERROR]: {e}")
         else:
             print("[PC SIMULATION] Инициализация симуляции слушателя звонков")
 
@@ -6244,44 +6252,7 @@ class SmartApp(App):
             self.timer_event.cancel()
             self.timer_event = None
         self.timer_label_ref = None
-
-    def show_incoming_call_ui(self, contact_name, number):
-        self.hide_incoming_call_ui()
-        content = self._build_popup_content(spacing=15)
-
-        self.call_status_lbl = Label(
-            text=f"[b]Входящий вызов[/b]\n{contact_name}\n{number}",
-            markup=True,
-            font_size=sp(20),
-            color=(1, 1, 1, 1),
-            halign='center',
-            valign='middle'
-        )
-        self.call_status_lbl.bind(size=lambda s, w: setattr(s, 'text_size', w))
-        content.add_widget(self.call_status_lbl)
-
-        btn_layout = BoxLayout(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(75),
-            spacing=dp(40),
-            padding=[dp(60), 0, dp(60), 0]
-        )
-
-        accept_btn = ImageButton(source='green.png', size_hint=(None, None), size=(dp(70), dp(70)))
-        accept_btn.bind(on_release=lambda x: [
-            self.telephony.answer_incoming_call(),
-            self.start_call_timer(self.call_status_lbl)
-        ])
-
-        reject_btn = ImageButton(source='red.png', size_hint=(None, None), size=(dp(70), dp(70)))
-        reject_btn.bind(on_release=lambda x: self._finalize_call_dismissal(reject_call=True))
-
-        btn_layout.add_widget(accept_btn)
-        btn_layout.add_widget(reject_btn)
-        content.add_widget(btn_layout)
-
-        self._open_call_popup(content, 0.42)
+        self.call_status_lbl = None
 
     def show_outgoing_call_ui(self, contact_name, number):
         self.hide_incoming_call_ui()
@@ -6313,7 +6284,6 @@ class SmartApp(App):
         content.add_widget(btn_layout)
 
         self._open_call_popup(content, 0.42)
-        self.start_call_timer(self.call_status_lbl)
 
     def hide_incoming_call_ui(self):
         self.stop_call_timer()
