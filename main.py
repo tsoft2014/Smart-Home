@@ -144,7 +144,7 @@ if platform == 'android':
 
 
 def request_android_permissions():
-    """Вызывайте на старте приложения (например, в on_start), когда Activity готова."""
+    """Запрашивает все нужные разрешения одним вызовом на старте приложения."""
     if platform != 'android':
         print("[PC TEST] Пропуск запроса разрешений Android")
         return
@@ -161,8 +161,6 @@ def request_android_permissions():
             Permission.READ_PHONE_STATE,
             Permission.CALL_PHONE,
         ]
-        if hasattr(Permission, "READ_CALL_LOG"):
-            permissions_list.append(Permission.READ_CALL_LOG)
 
         request_permissions(permissions_list)
         print("[ANDROID PERMISSIONS] Запрос разрешений отправлен")
@@ -5653,25 +5651,30 @@ class SafeCallWatcher:
             self.callback(state_name, incoming_number)
 
     def _poll(self, dt):
+        """Определяет состояния звонка: ringing, offhook, idle."""
+
         try:
-            is_ringing = False
+            if self._telephony is None:
+                return
 
-            if self._telecom is not None and BuildVersion and BuildVersion.SDK_INT >= 29:
-                try:
-                    is_ringing = bool(self._telecom.isRinging())
-                except Exception as e:
-                    print(f"[CALL WATCHER TELECOM WARN]: {e}")
+            state_code = int(self._telephony.getCallState())
 
-            if not is_ringing and self._telephony is not None:
-                try:
-                    state_code = int(self._telephony.getCallState())
-                    is_ringing = (state_code == TelephonyManager.CALL_STATE_RINGING)
-                except Exception as e:
-                    print(f"[CALL WATCHER TELEPHONY WARN]: {e}")
+            if state_code == TelephonyManager.CALL_STATE_RINGING:
+                state_name = "ringing"
 
-            self._emit("ringing" if is_ringing else "idle", None)
+            elif state_code == TelephonyManager.CALL_STATE_OFFHOOK:
+                state_name = "offhook"
+
+            else:
+                state_name = "idle"
+
+            self._emit(state_name, None)
+
         except Exception as e:
-            print(f"[CALL WATCHER POLL ERROR]: {e}")
+            print(
+                f"[CALL WATCHER POLL ERROR]: "
+                f"{type(e).__name__}: {e}"
+            )
 
     def simulate_state(self, state_name, incoming_number=None):
         self._emit(state_name, incoming_number)
@@ -5721,33 +5724,74 @@ class PhoneAssistantManager:
             self._watcher = None
 
     def handle_phone_state(self, state, number):
-        """Обработчик системных событий звонка (выполняется в главном потоке Kivy)"""
+        """Обработка входящих и завершённых телефонных вызовов."""
+
         if not self.app_instance:
             return
 
         if state == "ringing":
+
+            # Защита от повторного объявления одного звонка
+            if self.is_incoming_active:
+                return
+
             self.is_incoming_active = True
-            contact_name = self.get_contact_name_by_number(number) or "неизвестный номер"
+
+            contact_name = "неизвестный номер"
+
+            if number:
+                try:
+                    contact_name = (
+                            self.get_contact_name_by_number(number)
+                            or contact_name
+                    )
+                except Exception as e:
+                    print(f"[CONTACT LOOKUP ERROR]: {e}")
+
             display_text = f"Входящий вызов: {contact_name}"
+
             print(f"[TELEPHONY EVENT] {display_text}")
 
-            if hasattr(self.app_instance, 'show_incoming_call_ui'):
-                self.app_instance.show_incoming_call_ui(contact_name, number)
-            elif hasattr(self.app_instance, 'update_current_screen_status'):
+            if hasattr(self.app_instance, "show_incoming_call_ui"):
+                self.app_instance.show_incoming_call_ui(
+                    contact_name,
+                    number
+                )
+
+            elif hasattr(
+                    self.app_instance,
+                    "update_current_screen_status"
+            ):
                 self.app_instance.update_current_screen_status(
                     f"{display_text} («Алло» / «Сброс»)",
                     color=(1.0, 0.5, 0.2, 1)
                 )
 
-            self.speak_text(f"Входящий вызов от абонента {contact_name}")
+            # Объявляем имя звонящего
+            self.speak_text(
+                f"Входящий вызов. Звонит {contact_name}."
+            )
+
+        elif state == "offhook":
+
+            print("[TELEPHONY EVENT] Телефонный разговор активен")
+
+            # Не закрываем окно и не сбрасываем ожидание здесь.
 
         elif state == "idle":
-            self.is_incoming_active = False
-            print("[TELEPHONY EVENT] Вызов завершен / сброшен")
 
-            if hasattr(self.app_instance, 'hide_incoming_call_ui'):
+            if self.is_incoming_active:
+                print("[TELEPHONY EVENT] Вызов завершён")
+
+            self.is_incoming_active = False
+
+            if hasattr(self.app_instance, "hide_incoming_call_ui"):
                 self.app_instance.hide_incoming_call_ui()
-            elif hasattr(self.app_instance, 'update_current_screen_status'):
+
+            elif hasattr(
+                    self.app_instance,
+                    "update_current_screen_status"
+            ):
                 self.app_instance.update_current_screen_status(
                     "Ассистент: Ожидание",
                     color=(0.6, 0.6, 0.6, 1)
@@ -5756,14 +5800,11 @@ class PhoneAssistantManager:
             self.cancel_call_waiting()
 
     def cancel_call_waiting(self):
-        """Полный сброс всех состояний ожидания по команде 'отмена'"""
+        """Сброс состояний ожидания телефонных команд."""
+
         self.is_waiting_for_call_target = False
         self.is_waiting_for_number_choice = False
         self.pending_choices = []
-
-        # Гарантированно закрываем любые активные попапы при отмене
-        if self.app_instance and hasattr(self.app_instance, 'hide_incoming_call_ui'):
-            Clock.schedule_once(lambda dt: self.app_instance.hide_incoming_call_ui(), 0)
 
         print("[TELEPHONY] Режимы ожидания сброшены.")
 
@@ -6001,61 +6042,110 @@ class PhoneAssistantManager:
             print(f"[PC SIMULATION] Имитация исходящего вызова на: {phone_number}")
 
     def answer_incoming_call(self):
-        """Ответ на входящий вызов (TelecomManager + эмуляция гарнитуры HeadsetHook)"""
+        """Ответ на входящий вызов."""
+
         print("[TELEPHONY] Ответ на входящий вызов...")
-        self.is_incoming_active = False
-        if platform == 'android':
+
+        if platform == "android":
+
             try:
                 context = PythonActivity.mActivity
-                telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
-                if telecom_manager and hasattr(telecom_manager, 'acceptRingingCall'):
+
+                telecom_manager = context.getSystemService(
+                    Context.TELECOM_SERVICE
+                )
+
+                if telecom_manager:
                     telecom_manager.acceptRingingCall()
-                    print("[CALL SUCCESS] Вызов принят через TelecomManager")
+
+                    print(
+                        "[CALL REQUEST] "
+                        "Команда ответа передана TelecomManager"
+                    )
                     return
+
             except Exception as e:
                 print(f"[ANSWER TELECOM WARNING]: {e}")
 
             try:
                 context = PythonActivity.mActivity
+
                 down_intent = Intent(Intent.ACTION_MEDIA_BUTTON)
-                down_intent.putExtra(Intent.EXTRA_KEY_EVENT,
-                                     KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HEADSETHOOK))
+                down_intent.putExtra(
+                    Intent.EXTRA_KEY_EVENT,
+                    KeyEvent(
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_HEADSETHOOK
+                    )
+                )
                 context.sendOrderedBroadcast(down_intent, None)
 
                 up_intent = Intent(Intent.ACTION_MEDIA_BUTTON)
-                up_intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HEADSETHOOK))
+                up_intent.putExtra(
+                    Intent.EXTRA_KEY_EVENT,
+                    KeyEvent(
+                        KeyEvent.ACTION_UP,
+                        KeyEvent.KEYCODE_HEADSETHOOK
+                    )
+                )
                 context.sendOrderedBroadcast(up_intent, None)
-                print("[CALL SUCCESS] Сигнал ответа отправлен через HeadsetHook")
+
+                print("[CALL REQUEST] Сигнал ответа отправлен")
+
             except Exception as e:
                 print(f"[ANSWER ERROR HEADSETHOOK]: {e}")
+
         else:
             print("[PC SIMULATION] Имитация ответа на звонок")
 
     def reject_incoming_call(self):
-        """Сброс входящего вызова"""
+        """Отклонение входящего вызова."""
+
         print("[TELEPHONY] Сброс входящего вызова...")
-        self.is_incoming_active = False
-        if platform == 'android':
+
+        if platform == "android":
+
             try:
                 context = PythonActivity.mActivity
-                telecom_manager = context.getSystemService(Context.TELECOM_SERVICE)
-                if telecom_manager and hasattr(telecom_manager, 'endCall'):
+
+                telecom_manager = context.getSystemService(
+                    Context.TELECOM_SERVICE
+                )
+
+                if telecom_manager and hasattr(
+                        telecom_manager, "endCall"
+                ):
                     telecom_manager.endCall()
-                    print("[CALL SUCCESS] Вызов отклонен через TelecomManager")
+
+                    print("[CALL REQUEST] Команда сброса отправлена")
                     return
+
             except Exception as e:
                 print(f"[REJECT TELECOM WARNING]: {e}")
 
             try:
                 context = PythonActivity.mActivity
+
                 intent = Intent(Intent.ACTION_MEDIA_BUTTON)
-                intent.putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENDCALL))
+                intent.putExtra(
+                    Intent.EXTRA_KEY_EVENT,
+                    KeyEvent(
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_ENDCALL
+                    )
+                )
+
                 context.sendBroadcast(intent)
-                print("[CALL SUCCESS] Сигнал сброса отправлен")
+
+                print("[CALL REQUEST] Сигнал сброса отправлен")
+
             except Exception as e:
                 print(f"[REJECT ERROR]: {e}")
+
         else:
             print("[PC SIMULATION] Имитация сброса звонка")
+
+        self.is_incoming_active = False
 
     def get_contact_name_by_number(self, phone_number):
         """Определяет имя контакта по номеру (на Android — ContactsContract, на ПК — тестовая база)"""
@@ -6235,16 +6325,23 @@ class SmartApp(App):
             self._clear_who_to_call_labels(child)
 
     def _finalize_call_dismissal(self, reject_call=False):
-        """Останавливает таймер, сбрасывает состояния звонка, закрывает попап и возвращает статус"""
+        """Завершает обработку входящего вызова."""
+
         self.stop_call_timer()
 
         if hasattr(self, "telephony") and self.telephony:
-            self.telephony.is_incoming_active = False
+
             if reject_call:
                 self.telephony.reject_incoming_call()
+            else:
+                self.telephony.is_incoming_active = False
+
             self.telephony.cancel_call_waiting()
 
-        for attr in ("is_waiting_for_call_target", "is_waiting_for_number_choice"):
+        for attr in (
+                "is_waiting_for_call_target",
+                "is_waiting_for_number_choice"
+        ):
             if hasattr(self, attr):
                 setattr(self, attr, False)
 
@@ -6254,19 +6351,23 @@ class SmartApp(App):
 
         self.hide_incoming_call_ui()
 
-        hint = self.get_current_wake_hint() if hasattr(self, "get_current_wake_hint") else "алиса"
+        hint = (
+            self.get_current_wake_hint()
+            if hasattr(self, "get_current_wake_hint")
+            else "алиса"
+        )
+
         idle_text = f"Ассистент: Ожидание («{hint}»)"
         idle_color = (0.6, 0.6, 0.6, 1)
 
         if hasattr(self, "update_current_screen_status"):
             Clock.schedule_once(
-                lambda dt: self.update_current_screen_status(idle_text, color=idle_color),
+                lambda dt: self.update_current_screen_status(
+                    idle_text,
+                    color=idle_color
+                ),
                 0
             )
-        elif self.root and hasattr(self.root, "current_screen") and self.root.current_screen:
-            cur = self.root.current_screen
-            if hasattr(cur, "update_status"):
-                Clock.schedule_once(lambda dt: cur.update_status(idle_text, idle_color), 0)
 
     def _build_popup_content(self, padding=(25, 25, 25, 25), spacing=15):
         content = BoxLayout(
