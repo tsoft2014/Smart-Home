@@ -101,19 +101,32 @@ AudioManager = AudioTrack = None
 autoclass = None
 
 
-# 1. Единый блок инициализации Android-аудио, телефонии и разрешений
+
+# 1. Единый блок инициализации Android-аудио и разрешений
+
 HAS_ANDROID_AUDIO = False
-Context = None
-Intent = None
-IntentFilter = None
-TelephonyManager = None
-TelecomManager = None
-PythonActivity = None
-Uri = None
-KeyEvent = None
-BuildVersion = None
 
 if platform == 'android':
+    # Запрос разрешений при запуске приложения
+    try:
+        from android.permissions import request_permissions, Permission
+
+        request_permissions([
+            Permission.RECORD_AUDIO,
+            Permission.CAMERA,
+            Permission.WRITE_EXTERNAL_STORAGE,
+            Permission.READ_EXTERNAL_STORAGE,
+            Permission.READ_CONTACTS,
+            Permission.READ_PHONE_STATE,
+            Permission.CALL_PHONE
+        ])
+
+        print("[ANDROID PERMISSIONS] Запрос разрешений отправлен")
+
+    except Exception as e:
+        print(f"[ANDROID PERMISSIONS ERROR]: {e}")
+
+    # Инициализация Android Audio
     try:
         from jnius import autoclass
 
@@ -122,50 +135,68 @@ if platform == 'android':
         AudioFormat = autoclass('android.media.AudioFormat')
         AudioManager = autoclass('android.media.AudioManager')
         AudioTrack = autoclass('android.media.AudioTrack')
+
         HAS_ANDROID_AUDIO = True
+        print("[ANDROID AUDIO] Инициализация успешна")
+
     except Exception as e:
         print(f"[ANDROID AUDIO INIT ERROR]: {e}")
         HAS_ANDROID_AUDIO = False
 
+    # Инициализация телефонии
     try:
-        from jnius import autoclass
+        from jnius import autoclass, java_method, PythonJavaClass
 
         Context = autoclass('android.content.Context')
         Intent = autoclass('android.content.Intent')
         IntentFilter = autoclass('android.content.IntentFilter')
         TelephonyManager = autoclass('android.telephony.TelephonyManager')
-        TelecomManager = autoclass('android.telecom.TelecomManager')
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
         Uri = autoclass('android.net.Uri')
         KeyEvent = autoclass('android.view.KeyEvent')
-        BuildVersion = autoclass('android.os.Build$VERSION')
+
+        # Нативный Java-ресивер для отслеживания звонков
+        class PhoneStateReceiver(PythonJavaClass):
+            __javainterfaces__ = ['android/content/BroadcastReceiver']
+            __javachain__ = ['java/lang/Object']
+
+            def __init__(self, callback):
+                super(PhoneStateReceiver, self).__init__()
+                self.callback = callback
+
+            @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
+            def onReceive(self, context, intent):
+                action = intent.getAction()
+
+                if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
+                    state = intent.getStringExtra(
+                        TelephonyManager.EXTRA_STATE
+                    )
+
+                    if state == TelephonyManager.EXTRA_STATE_RINGING:
+                        incoming_number = intent.getStringExtra(
+                            TelephonyManager.EXTRA_INCOMING_NUMBER
+                        )
+
+                        if self.callback:
+                            self.callback("ringing", incoming_number)
+
+                    elif state == TelephonyManager.EXTRA_STATE_IDLE:
+                        if self.callback:
+                            self.callback("idle", None)
+
+        print("[ANDROID TELEPHONY] Инициализация успешна")
+
     except Exception as e:
         print(f"[ANDROID TELEPHONY INIT ERROR]: {e}")
 
+else:
+    HAS_ANDROID_AUDIO = False
 
-def request_android_permissions():
-    """Запрашивает все нужные разрешения одним вызовом на старте приложения."""
-    if platform != 'android':
-        print("[PC TEST] Пропуск запроса разрешений Android")
-        return
+    class PhoneStateReceiver:
+        def __init__(self, callback):
+            self.callback = callback
 
-    try:
-        from android.permissions import request_permissions, Permission
-
-        permissions_list = [
-            Permission.RECORD_AUDIO,
-            Permission.CAMERA,
-            Permission.WRITE_EXTERNAL_STORAGE,
-            Permission.READ_EXTERNAL_STORAGE,
-            Permission.READ_CONTACTS,
-            Permission.READ_PHONE_STATE,
-            Permission.CALL_PHONE,
-        ]
-
-        request_permissions(permissions_list)
-        print("[ANDROID PERMISSIONS] Запрос разрешений отправлен")
-    except Exception as e:
-        print(f"[ANDROID PERMISSIONS ERROR]: {e}")
 
 # Безопасный импорт sounddevice только для ПК
 HAS_SOUNDDEVICE = False
@@ -229,6 +260,7 @@ else:
 tts_lock = threading.Lock()
 
 # Инициализация Android TTS с правильным callback и Locale
+_android_tts_ready = False
 _android_tts = None
 if platform == 'android':
     try:
@@ -243,21 +275,32 @@ if platform == 'android':
             __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnInitListener']
             __javachars__ = None
 
-            @java_method('(I)V')
-            def onInit(self, status):
-                global _android_tts
-                if status == TextToSpeech.SUCCESS:
-                    try:
-                        ru_locale = Locale("ru", "RU")
-                        result = _android_tts.setLanguage(ru_locale)
-                        if result == TextToSpeech.LANG_MISSING_DATA or result == TextToSpeech.LANG_NOT_SUPPORTED:
-                            print("[ANDROID TTS] Русский язык не поддерживается на устройстве")
-                        else:
-                            print("[ANDROID TTS] Движок успешно инициализирован и настроен!")
-                    except Exception as e:
-                        print(f"[ANDROID TTS CONFIG ERROR]: {e}")
-                else:
-                    print("[ANDROID TTS] Ошибка инициализации нативного движка")
+
+        @java_method('(I)V')
+        def onInit(self, status):
+            global _android_tts, _android_tts_ready
+
+            _android_tts_ready = False
+
+            if status == TextToSpeech.SUCCESS:
+                try:
+                    ru_locale = Locale("ru", "RU")
+                    result = _android_tts.setLanguage(ru_locale)
+
+                    if (
+                            result == TextToSpeech.LANG_MISSING_DATA
+                            or result == TextToSpeech.LANG_NOT_SUPPORTED
+                    ):
+                        print("[ANDROID TTS] Русский язык не поддерживается")
+                    else:
+                        _android_tts_ready = True
+                        print("[ANDROID TTS] Движок готов к озвучиванию!")
+
+                except Exception as e:
+                    print(f"[ANDROID TTS CONFIG ERROR]: {e}")
+
+            else:
+                print(f"[ANDROID TTS] Ошибка инициализации: {status}")
 
 
         _tts_listener = TTSListener()
@@ -776,20 +819,25 @@ class VoiceAssistant:
             with self._speech_lock:
                 return self.is_speaking and self._speech_id == current_id
 
+
         def _say_thread(cb=on_done_callback, speech_token=current_id, payload=clean_text):
             engine = None
 
             try:
                 if platform == "android":
-                    try:
-                        if _android_tts is not None:
+
+                    if _android_tts is not None and _android_tts_ready:
+                        try:
                             HashMap = autoclass("java.util.HashMap")
                             params = HashMap()
-                            _android_tts.speak(payload, 0, params)
+
+                            result = _android_tts.speak(payload, 0, params)
+                            print(f"[ANDROID TTS] speak result: {result}")
 
                             import time
                             estimated_duration = max(1.8, len(payload) * 0.085)
                             steps = int(estimated_duration / 0.2)
+
                             for _ in range(max(1, steps)):
                                 if not _is_current_session():
                                     try:
@@ -797,12 +845,22 @@ class VoiceAssistant:
                                     except Exception:
                                         pass
                                     break
+
                                 time.sleep(0.2)
 
                             if _is_current_session():
                                 time.sleep(0.4)
-                    except Exception as e:
-                        print(f"[ANDROID TTS ERROR]: {e}")
+
+                        except Exception as e:
+                            print(f"[ANDROID TTS ERROR]: {e}")
+
+                    else:
+                        print(
+                            f"[ANDROID TTS NOT READY] "
+                            f"engine={_android_tts is not None}, "
+                            f"ready={_android_tts_ready}"
+                        )
+
                 else:
                     try:
                         import pythoncom
@@ -841,12 +899,15 @@ class VoiceAssistant:
                 with self._speech_lock:
                     if self.current_engine == engine:
                         self.current_engine = None
+
                     is_latest = (self._speech_id == speech_token)
+
                     if is_latest:
                         self.is_speaking = False
 
                 if is_latest and cb:
                     Clock.schedule_once(lambda dt: cb(), 0)
+
 
         threading.Thread(target=_say_thread, daemon=True).start()
 
