@@ -259,9 +259,12 @@ else:
 
 tts_lock = threading.Lock()
 
-# Инициализация Android TTS с правильным callback и Locale
+
+# Инициализация Android TTS с callback и Locale
 _android_tts_ready = False
 _android_tts = None
+_tts_listener = None
+
 if platform == 'android':
     try:
         from jnius import autoclass, java_method, PythonJavaClass
@@ -270,45 +273,53 @@ if platform == 'android':
         TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
         Locale = autoclass('java.util.Locale')
 
-
         class TTSListener(PythonJavaClass):
-            __javainterfaces__ = ['android/speech/tts/TextToSpeech$OnInitListener']
-            __javachars__ = None
+            __javainterfaces__ = [
+                'android/speech/tts/TextToSpeech$OnInitListener'
+            ]
+            __javacontext__ = 'app'
 
+            @java_method('(I)V')
+            def onInit(self, status):
+                global _android_tts, _android_tts_ready
 
-        @java_method('(I)V')
-        def onInit(self, status):
-            global _android_tts, _android_tts_ready
+                _android_tts_ready = False
 
-            _android_tts_ready = False
+                if status == TextToSpeech.SUCCESS:
+                    try:
+                        ru_locale = Locale("ru", "RU")
+                        result = _android_tts.setLanguage(ru_locale)
 
-            if status == TextToSpeech.SUCCESS:
-                try:
-                    ru_locale = Locale("ru", "RU")
-                    result = _android_tts.setLanguage(ru_locale)
-
-                    if (
+                        if (
                             result == TextToSpeech.LANG_MISSING_DATA
                             or result == TextToSpeech.LANG_NOT_SUPPORTED
-                    ):
-                        print("[ANDROID TTS] Русский язык не поддерживается")
-                    else:
-                        _android_tts_ready = True
-                        print("[ANDROID TTS] Движок готов к озвучиванию!")
+                        ):
+                            print(
+                                "[ANDROID TTS] Русский язык не поддерживается"
+                            )
+                        else:
+                            _android_tts_ready = True
+                            print("[ANDROID TTS] Движок готов к озвучиванию!")
 
-                except Exception as e:
-                    print(f"[ANDROID TTS CONFIG ERROR]: {e}")
+                    except Exception as e:
+                        print(f"[ANDROID TTS CONFIG ERROR]: {e}")
 
-            else:
-                print(f"[ANDROID TTS] Ошибка инициализации: {status}")
-
+                else:
+                    print(f"[ANDROID TTS] Ошибка инициализации: {status}")
 
         _tts_listener = TTSListener()
-        _android_tts = TextToSpeech(PythonActivity.mActivity, _tts_listener)
+
+        _android_tts = TextToSpeech(
+            PythonActivity.mActivity,
+            _tts_listener
+        )
+
+        print("[ANDROID TTS] Инициализация отправлена")
 
     except Exception as e:
         print(f"[ANDROID TTS INIT ERROR]: {e}")
         _android_tts = None
+        _android_tts_ready = False
 
 _audio_play_counter = itertools.count(1)
 
