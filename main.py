@@ -55,6 +55,16 @@ from kivy.graphics import Color, RoundedRectangle, Rectangle, Ellipse, Triangle
 from kivy.core.clipboard import Clipboard  # <--- Убедитесь, что Clipboard импортирован в начале файла
 from kivy.uix.behaviors import ButtonBehavior
 
+
+BroadcastReceiver = None
+
+if platform == "android":
+    try:
+        from android.broadcast import BroadcastReceiver
+        print("[TELEPHONY] BroadcastReceiver импортирован")
+    except ImportError as e:
+        print(f"[TELEPHONY IMPORT ERROR]: {e}")
+
 # Проверки наличия модулей
 try:
     from camera4kivy import Preview
@@ -118,7 +128,8 @@ if platform == 'android':
             Permission.READ_EXTERNAL_STORAGE,
             Permission.READ_CONTACTS,
             Permission.READ_PHONE_STATE,
-            Permission.CALL_PHONE
+            Permission.CALL_PHONE,
+            Permission.READ_CALL_LOG
         ])
 
         print("[ANDROID PERMISSIONS] Запрос разрешений отправлен")
@@ -154,36 +165,6 @@ if platform == 'android':
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
         Uri = autoclass('android.net.Uri')
         KeyEvent = autoclass('android.view.KeyEvent')
-
-        # Нативный Java-ресивер для отслеживания звонков
-        class PhoneStateReceiver(PythonJavaClass):
-            __javainterfaces__ = ['android/content/BroadcastReceiver']
-            __javachain__ = ['java/lang/Object']
-
-            def __init__(self, callback):
-                super(PhoneStateReceiver, self).__init__()
-                self.callback = callback
-
-            @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
-            def onReceive(self, context, intent):
-                action = intent.getAction()
-
-                if action == TelephonyManager.ACTION_PHONE_STATE_CHANGED:
-                    state = intent.getStringExtra(
-                        TelephonyManager.EXTRA_STATE
-                    )
-
-                    if state == TelephonyManager.EXTRA_STATE_RINGING:
-                        incoming_number = intent.getStringExtra(
-                            TelephonyManager.EXTRA_INCOMING_NUMBER
-                        )
-
-                        if self.callback:
-                            self.callback("ringing", incoming_number)
-
-                    elif state == TelephonyManager.EXTRA_STATE_IDLE:
-                        if self.callback:
-                            self.callback("idle", None)
 
         print("[ANDROID TELEPHONY] Инициализация успешна")
 
@@ -696,6 +677,9 @@ class VoiceAssistant:
 
     def stop(self):
         """Остановка текущей озвучки"""
+        import traceback
+        print("[TTS STOP CALLER]\n" + "".join(traceback.format_stack(limit=8)))
+
         print("[Assistant] Принудительная остановка...")
         with self._speech_lock:
             self._speech_id += 1
@@ -5762,38 +5746,187 @@ class PhoneAssistantManager:
         self._watcher = None
         self.app_instance = None
 
-    def init_receiver(self, app_instance):
-        """Безопасная инициализация проверки состояния звонков без падений в JNI."""
-        self.app_instance = app_instance
+        # Данные текущего входящего вызова.
+        self._incoming_number = None
+        self._current_contact_name = "неизвестный номер"
+        self._ring_event = None
 
-        def on_state(state, num):
+    def _on_phone_broadcast(self, context, intent):
+        """Получение состояния и номера вызова из Android BroadcastReceiver.
+
+        Callback BroadcastReceiver выполняется не в UI-потоке.
+        Все изменения состояния приложения передаются в главный поток Kivy.
+        """
+        try:
+            state = intent.getStringExtra("state")
+            if not state:
+                print("[TELEPHONY BROADCAST] В событии отсутствует state")
+                return
+
+            number = None
+
+            if state == "RINGING":
+                number = intent.getStringExtra("incoming_number")
+                print(
+                    f"[TELEPHONY BROADCAST] RINGING, number={number}"
+                )
+                state_name = "ringing"
+
+            elif state == "OFFHOOK":
+                print("[TELEPHONY BROADCAST] OFFHOOK")
+                state_name = "offhook"
+
+            elif state == "IDLE":
+                print("[TELEPHONY BROADCAST] IDLE")
+                state_name = "idle"
+
+            else:
+                print(f"[TELEPHONY BROADCAST] Неизвестное состояние: {state}")
+                return
+
+            # Передаём ВСЕ состояния в главный поток. Это также позволяет
+            # закрыть экран входящего вызова, если watcher пропустил IDLE.
             Clock.schedule_once(
-                lambda dt, s=state, n=num: self.handle_phone_state(s, n), 0
+                lambda dt, s=state_name, n=(str(number) if number else None):
+                    self.handle_phone_state(s, n),
+                0
             )
 
-        if platform == 'android':
-            try:
-                activity = PythonActivity.mActivity if PythonActivity else None
-                if not activity:
-                    print("[TELEPHONY] Activity ещё не готова, повтор через 1с")
-                    Clock.schedule_once(lambda dt: self.init_receiver(app_instance), 1.0)
-                    return
+        except Exception as e:
+            print(
+                f"[TELEPHONY BROADCAST ERROR]: "
+                f"{type(e).__name__}: {e}"
+            )
 
-                self._watcher = SafeCallWatcher(on_state)
-                self._watcher.start(interval=0.6)
-                print("[TELEPHONY] Безопасный наблюдатель звонков запущен!")
-            except Exception as e:
-                print(f"[TELEPHONY LISTENER ERROR]: {e}")
+    def init_receiver(self, app_instance):
+        """Запуск Android-приёмника и наблюдателя состояния звонков."""
+        self.app_instance = app_instance
+
+        def on_state(state, number):
+            # BroadcastReceiver может успеть получить номер раньше
+            # опроса getCallState(). Даём ему небольшое время.
+            if state == "ringing":
+                if self._ring_event is not None:
+                    self._ring_event.cancel()
+
+                self._ring_event = Clock.schedule_once(
+                    lambda dt, n=number:
+                        self.handle_phone_state(
+                            "ringing",
+                            self._incoming_number or n
+                        ),
+                    0.8
+                )
+                return
+
+            if state == "idle" and self._ring_event is not None:
+                self._ring_event.cancel()
+                self._ring_event = None
+
+            Clock.schedule_once(
+                lambda dt, s=state, n=number:
+                    self.handle_phone_state(s, n),
+                0
+            )
+
+        if platform == "android":
+            activity = PythonActivity.mActivity if PythonActivity else None
+            if not activity:
+                print(
+                    "[TELEPHONY] Activity ещё не готова, "
+                    "повторная попытка через 1 секунду"
+                )
+                Clock.schedule_once(
+                    lambda dt: self.init_receiver(app_instance),
+                    1.0
+                )
+                return
+
+            # Приёмник и watcher запускаются независимо:
+            # ошибка одного не должна блокировать второй.
+            if self.receiver is None:
+                try:
+                    receiver = BroadcastReceiver(
+                        self._on_phone_broadcast,
+                        actions=["phone_state"]
+                    )
+                    receiver.start()
+                    self.receiver = receiver
+                    print(
+                        "[TELEPHONY] BroadcastReceiver зарегистрирован"
+                    )
+                except Exception as e:
+                    self.receiver = None
+                    print(
+                        f"[TELEPHONY RECEIVER ERROR]: "
+                        f"{type(e).__name__}: {e}"
+                    )
+            else:
+                print(
+                    "[TELEPHONY] BroadcastReceiver уже зарегистрирован"
+                )
+
+            if self._watcher is None:
+                try:
+                    watcher = SafeCallWatcher(on_state)
+                    watcher.start(interval=0.6)
+                    self._watcher = watcher
+                    print("[TELEPHONY] SafeCallWatcher запущен")
+                except Exception as e:
+                    self._watcher = None
+                    print(
+                        f"[TELEPHONY WATCHER ERROR]: "
+                        f"{type(e).__name__}: {e}"
+                    )
+            else:
+                print("[TELEPHONY] SafeCallWatcher уже запущен")
+
         else:
-            self._watcher = SafeCallWatcher(on_state)
-            self._watcher.start()
-            print("[PC SIMULATION] Инициализация симуляции слушателя звонков")
+            if self._watcher is None:
+                self._watcher = SafeCallWatcher(on_state)
+                self._watcher.start()
+            print(
+                "[PC SIMULATION] Наблюдатель звонков запущен"
+            )
+
+    def _update_incoming_call_ui(self, contact_name, number):
+        """Обновление интерфейса входящего вызова."""
+        if not self.app_instance:
+            return
+
+        if hasattr(self.app_instance, "show_incoming_call_ui"):
+            self.app_instance.show_incoming_call_ui(
+                contact_name,
+                number
+            )
+
+        elif hasattr(self.app_instance, "update_current_screen_status"):
+            self.app_instance.update_current_screen_status(
+                f"Звонит: {contact_name}",
+                color=(1.0, 0.5, 0.2, 1)
+            )
 
     def stop_watcher(self):
-        """Остановка опроса состояния звонков."""
+        """Остановка опроса и Android-приёмника телефонных событий."""
+        if self._ring_event is not None:
+            self._ring_event.cancel()
+            self._ring_event = None
+
         if self._watcher is not None:
             self._watcher.stop()
             self._watcher = None
+
+        if self.receiver is not None:
+            try:
+                self.receiver.stop()
+                print("[TELEPHONY] BroadcastReceiver остановлен")
+            except Exception as e:
+                print(
+                    f"[TELEPHONY RECEIVER STOP ERROR]: "
+                    f"{type(e).__name__}: {e}"
+                )
+            finally:
+                self.receiver = None
 
     def handle_phone_state(self, state, number):
         """Обработка входящих и завершённых телефонных вызовов."""
@@ -5803,11 +5936,49 @@ class PhoneAssistantManager:
 
         if state == "ringing":
 
-            # Защита от повторного объявления одного звонка
+            # Если звонок уже обрабатывается,
+            # проверяем, не поступил ли наконец номер.
             if self.is_incoming_active:
+
+                if number and number != self._incoming_number:
+
+                    self._incoming_number = number
+
+                    try:
+                        contact_name = (
+                                self.get_contact_name_by_number(number)
+                                or "неизвестный номер"
+                        )
+                    except Exception as e:
+                        print(f"[CONTACT LOOKUP ERROR]: {e}")
+                        contact_name = "неизвестный номер"
+
+                    if contact_name != self._current_contact_name:
+
+                        self._current_contact_name = contact_name
+
+                        print(
+                            f"[TELEPHONY] Номер уточнён: "
+                            f"{contact_name} ({number})"
+                        )
+
+                        self._update_incoming_call_ui(
+                            contact_name,
+                            number
+                        )
+
+                        # Если раньше объявили неизвестный номер,
+                        # теперь сообщаем установленное имя.
+                        if contact_name != "неизвестный номер":
+                            self.speak_text(
+                                f"Уточнение. Звонит {contact_name}."
+                            )
+
                 return
 
+            # Первое обнаружение входящего вызова.
             self.is_incoming_active = True
+            self._incoming_number = number
 
             contact_name = "неизвестный номер"
 
@@ -5820,35 +5991,29 @@ class PhoneAssistantManager:
                 except Exception as e:
                     print(f"[CONTACT LOOKUP ERROR]: {e}")
 
-            display_text = f"Входящий вызов: {contact_name}"
+            self._current_contact_name = contact_name
 
-            print(f"[TELEPHONY EVENT] {display_text}")
+            print(
+                f"[TELEPHONY EVENT] "
+                f"Входящий вызов: {contact_name}, номер={number}"
+            )
 
-            if hasattr(self.app_instance, "show_incoming_call_ui"):
-                self.app_instance.show_incoming_call_ui(
-                    contact_name,
-                    number
-                )
+            self._update_incoming_call_ui(
+                contact_name,
+                number
+            )
 
-            elif hasattr(
-                    self.app_instance,
-                    "update_current_screen_status"
-            ):
-                self.app_instance.update_current_screen_status(
-                    f"{display_text} («Алло» / «Сброс»)",
-                    color=(1.0, 0.5, 0.2, 1)
-                )
-
-            # Объявляем имя звонящего
+            # Первое голосовое объявление.
             self.speak_text(
                 f"Входящий вызов. Звонит {contact_name}."
             )
 
         elif state == "offhook":
 
-            print("[TELEPHONY EVENT] Телефонный разговор активен")
-
-            # Не закрываем окно и не сбрасываем ожидание здесь.
+            print(
+                "[TELEPHONY EVENT] "
+                "Телефонный разговор активен"
+            )
 
         elif state == "idle":
 
@@ -5856,14 +6021,22 @@ class PhoneAssistantManager:
                 print("[TELEPHONY EVENT] Вызов завершён")
 
             self.is_incoming_active = False
+            self._incoming_number = None
+            self._current_contact_name = "неизвестный номер"
+
+            if self._ring_event is not None:
+                self._ring_event.cancel()
+                self._ring_event = None
 
             if hasattr(self.app_instance, "hide_incoming_call_ui"):
+
                 self.app_instance.hide_incoming_call_ui()
 
             elif hasattr(
                     self.app_instance,
                     "update_current_screen_status"
             ):
+
                 self.app_instance.update_current_screen_status(
                     "Ассистент: Ожидание",
                     color=(0.6, 0.6, 0.6, 1)
@@ -6329,6 +6502,7 @@ if __name__ == '__main__' and platform != 'android':
 
 
 
+
 # Класс кликабельной картинки-кнопки (наследуем от Kivy Image)
 class ImageButton(ButtonBehavior, Image):
     pass
@@ -6407,6 +6581,8 @@ class SmartApp(App):
                 self.telephony.reject_incoming_call()
             else:
                 self.telephony.is_incoming_active = False
+                self.telephony._incoming_number = None
+                self.telephony._current_contact_name = "неизвестный номер"
 
             self.telephony.cancel_call_waiting()
 
