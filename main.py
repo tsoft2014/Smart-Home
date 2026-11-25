@@ -242,53 +242,172 @@ tts_lock = threading.Lock()
 
 
 # Инициализация Android TTS с callback и Locale
+
 _android_tts_ready = False
 _android_tts = None
 _tts_listener = None
+_tts_progress_listener = None
 
-if platform == 'android':
+_tts_callbacks = {}
+_tts_callbacks_lock = threading.Lock()
+_tts_utterance_counter = itertools.count(1)
+
+
+def _android_tts_complete(utterance_id, error=None):
+    """Получение реального завершения Android TTS."""
+    with _tts_callbacks_lock:
+        callback = _tts_callbacks.pop(str(utterance_id), None)
+
+    if error:
+        print(
+            f"[ANDROID TTS PLAYBACK ERROR] "
+            f"id={utterance_id}, error={error}"
+        )
+    else:
+        print(f"[ANDROID TTS DONE] id={utterance_id}")
+
+    if callback:
+        Clock.schedule_once(lambda dt: callback(), 0)
+
+
+def _android_tts_cancel(utterance_id):
+    """Удаление ожидающего callback при остановке речи."""
+    if utterance_id is None:
+        return
+
+    with _tts_callbacks_lock:
+        _tts_callbacks.pop(str(utterance_id), None)
+
+
+
+def _android_tts_speak(text, callback=None):
+    """Запуск Android TTS с реальным контролем завершения."""
+    global _android_tts, _android_tts_ready
+
+    if not _android_tts or not _android_tts_ready:
+        print("[ANDROID TTS] Движок не готов")
+        return None
+
+    utterance_id = str(next(_tts_utterance_counter))
+
+    if callback:
+        with _tts_callbacks_lock:
+            _tts_callbacks[utterance_id] = callback
+
+    try:
+        HashMap = autoclass("java.util.HashMap")
+        params = HashMap()
+        params.put("utteranceId", utterance_id)
+
+        result = _android_tts.speak(text, 0, params)
+
+        print(
+            f"[ANDROID TTS] speak result={result}, "
+            f"id={utterance_id}"
+        )
+
+        if result == -1:
+            _android_tts_cancel(utterance_id)
+            print("[ANDROID TTS] Ошибка запуска озвучивания")
+            return None
+
+        return utterance_id
+
+    except Exception as e:
+        _android_tts_cancel(utterance_id)
+        print(f"[ANDROID TTS START ERROR]: {e}")
+        return None
+
+
+
+
+if platform == "android":
     try:
         from jnius import autoclass, java_method, PythonJavaClass
 
-        PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        TextToSpeech = autoclass('android.speech.tts.TextToSpeech')
-        Locale = autoclass('java.util.Locale')
+        PythonActivity = autoclass(
+            "org.kivy.android.PythonActivity"
+        )
+        TextToSpeech = autoclass(
+            "android.speech.tts.TextToSpeech"
+        )
+        Locale = autoclass("java.util.Locale")
 
-        class TTSListener(PythonJavaClass):
+        class TTSProgressListener(PythonJavaClass):
             __javainterfaces__ = [
-                'android/speech/tts/TextToSpeech$OnInitListener'
+                "android/speech/tts/UtteranceProgressListener"
             ]
-            __javacontext__ = 'app'
+            __javacontext__ = "app"
 
-            @java_method('(I)V')
+            @java_method("(Ljava/lang/String;)V")
+            def onStart(self, utterance_id):
+                print(
+                    f"[ANDROID TTS STARTED] id={utterance_id}"
+                )
+
+            @java_method("(Ljava/lang/String;)V")
+            def onDone(self, utterance_id):
+                _android_tts_complete(utterance_id)
+
+            @java_method("(Ljava/lang/String;)V")
+            def onError(self, utterance_id):
+                _android_tts_complete(
+                    utterance_id,
+                    "Ошибка воспроизведения"
+                )
+
+        class TTSInitListener(PythonJavaClass):
+            __javainterfaces__ = [
+                "android/speech/tts/TextToSpeech$OnInitListener"
+            ]
+            __javacontext__ = "app"
+
+            @java_method("(I)V")
             def onInit(self, status):
-                global _android_tts, _android_tts_ready
+                global _android_tts
+                global _android_tts_ready
 
                 _android_tts_ready = False
 
-                if status == TextToSpeech.SUCCESS:
-                    try:
-                        ru_locale = Locale("ru", "RU")
-                        result = _android_tts.setLanguage(ru_locale)
+                if status != TextToSpeech.SUCCESS:
+                    print(
+                        f"[ANDROID TTS INIT ERROR] status={status}"
+                    )
+                    return
 
-                        if (
-                            result == TextToSpeech.LANG_MISSING_DATA
-                            or result == TextToSpeech.LANG_NOT_SUPPORTED
-                        ):
-                            print(
-                                "[ANDROID TTS] Русский язык не поддерживается"
-                            )
-                        else:
-                            _android_tts_ready = True
-                            print("[ANDROID TTS] Движок готов к озвучиванию!")
+                try:
+                    ru_locale = Locale("ru", "RU")
+                    result = _android_tts.setLanguage(ru_locale)
 
-                    except Exception as e:
-                        print(f"[ANDROID TTS CONFIG ERROR]: {e}")
+                    if (
+                        result == TextToSpeech.LANG_MISSING_DATA
+                        or result == TextToSpeech.LANG_NOT_SUPPORTED
+                    ):
+                        print(
+                            "[ANDROID TTS] "
+                            "Русский язык не поддерживается"
+                        )
+                        return
 
-                else:
-                    print(f"[ANDROID TTS] Ошибка инициализации: {status}")
+                    _android_tts.setOnUtteranceProgressListener(
+                        _tts_progress_listener
+                    )
 
-        _tts_listener = TTSListener()
+                    _android_tts_ready = True
+
+                    print(
+                        "[ANDROID TTS] "
+                        "Движок готов, слушатель подключён"
+                    )
+
+                except Exception as e:
+                    print(
+                        f"[ANDROID TTS CONFIG ERROR]: {e}"
+                    )
+
+        # Сохраняем слушателей глобально на всё время работы приложения.
+        _tts_progress_listener = TTSProgressListener()
+        _tts_listener = TTSInitListener()
 
         _android_tts = TextToSpeech(
             PythonActivity.mActivity,
@@ -302,74 +421,104 @@ if platform == 'android':
         _android_tts = None
         _android_tts_ready = False
 
+
 _audio_play_counter = itertools.count(1)
+
 
 
 def speak(text, on_done_callback=None):
     if not text or not str(text).strip():
         if on_done_callback:
-            on_done_callback()
+            Clock.schedule_once(
+                lambda dt: on_done_callback(), 0
+            )
         return
 
     text = str(text).strip()
 
-    # --- НИЗКОУРОВНЕВАЯ ЛОВУШКА СО СТРОГИМ ФИЛЬТРОМ НА "СЛУШАЮ" ---
     call_id = next(_audio_play_counter)
 
     if "слушаю" in text.lower():
-        print(f"\n🚨 [TARGET LOCKED: 'СЛУШАЮ' #{call_id}] ФИЗИЧЕСКИЙ ЗАПРОС ЗВУКА: '{text}'")
-        print("Стек вызовов для слова 'слушаю':")
+        print(
+            f"\n🚨 [TARGET LOCKED: 'СЛУШАЮ' #{call_id}] "
+            f"ЗАПРОС ЗВУКА: '{text}'"
+        )
+        print("Стек вызовов:")
         for line in traceback.format_stack()[:-1]:
             print("   ->", line.strip())
         print("=" * 60)
 
-    # -----------------------------------------------------------
+    # Android: используем единый механизм с реальным завершением.
+    if platform == "android":
+        print(
+            f"[ANDROID GLOBAL TTS #{call_id}] "
+            f"Передача в общий механизм"
+        )
 
+        result = _android_tts_speak(
+            text,
+            on_done_callback
+        )
+
+        if result is None and on_done_callback:
+            Clock.schedule_once(
+                lambda dt: on_done_callback(), 0
+            )
+
+        return
+
+    # Компьютер: сохраняем pyttsx3.
     def _say_thread():
-        with tts_lock:
-            if platform == 'android':
-                try:
-                    if _android_tts is not None:
-                        print(f"🚨 [ANDROID AUDIO EXECUTE #{call_id}] Запуск нативного speak")
-                        HashMap = autoclass('java.util.HashMap')
-                        params = HashMap()
-                        _android_tts.speak(text, 0, params)
-                    else:
-                        print(f"[ANDROID TTS ERROR #{call_id}]: Движок не инициализирован")
-                except Exception as e:
-                    print(f"[ANDROID TTS ERROR #{call_id}]: {e}")
-            else:
-                pythoncom_imported = False
-                try:
-                    try:
-                        import pythoncom
-                        pythoncom.CoInitialize()
-                        pythoncom_imported = True
-                    except ImportError:
-                        pass
+        pythoncom_imported = False
 
-                    import pyttsx3
-                    print(f"🚨 [PC AUDIO EXECUTE #{call_id}] Инициализация pyttsx3 и старт say()")
-                    engine = pyttsx3.init()
-                    engine.setProperty('rate', 170)
-                    engine.say(text)
-                    engine.runAndWait()
-                    engine.stop()
-                    print(f"🚨 [PC AUDIO EXECUTE #{call_id}] Воспроизведение завершено")
-                except Exception as e:
-                    print(f"[PC TTS ERROR #{call_id}]: {e}")
-                finally:
-                    if pythoncom_imported:
-                        try:
-                            import pythoncom
-                            pythoncom.CoUninitialize()
-                        except Exception:
-                            pass
+        try:
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+                pythoncom_imported = True
+            except ImportError:
+                pass
+
+            import pyttsx3
+
+            print(
+                f"[PC AUDIO EXECUTE #{call_id}] "
+                f"Запуск pyttsx3"
+            )
+
+            with tts_lock:
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 170)
+                engine.say(text)
+                engine.runAndWait()
+                engine.stop()
+
+            print(
+                f"[PC AUDIO EXECUTE #{call_id}] "
+                f"Воспроизведение завершено"
+            )
+
+        except Exception as e:
+            print(f"[PC TTS ERROR #{call_id}]: {e}")
+
+        finally:
+            if pythoncom_imported:
+                try:
+                    import pythoncom
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
             if on_done_callback:
-                on_done_callback()
+                Clock.schedule_once(
+                    lambda dt: on_done_callback(), 0
+                )
 
-    threading.Thread(target=_say_thread, daemon=True, name=f"TTS-Thread-{call_id}").start()
+    threading.Thread(
+        target=_say_thread,
+        daemon=True,
+        name=f"TTS-Thread-{call_id}"
+    ).start()
 
 def format_temperature_speech(temp_value):
     try:
@@ -655,12 +804,11 @@ class VoiceAssistant:
 
         self.is_speaking = False
         self.last_spoken_text = ""
-        self.current_engine = None  # Ссылка на активный движок pyttsx3 для экстренной остановки
+        self.current_engine = None
+
         self._speech_lock = threading.Lock()
         self._speech_id = 0
-        self.is_speaking = False
-        self.last_spoken_text = ""
-        self.current_engine = None
+        self._current_utterance_id = None
 
     def start_activity_timer(self):
         # Отменяем предыдущий запуск, если он был, чтобы не плодить дубликаты
@@ -676,32 +824,39 @@ class VoiceAssistant:
             self.assistant_event = None
 
     def stop(self):
-        """Остановка текущей озвучки"""
-        import traceback
-        print("[TTS STOP CALLER]\n" + "".join(traceback.format_stack(limit=8)))
+        """Остановка текущей озвучки."""
 
-        print("[Assistant] Принудительная остановка...")
         with self._speech_lock:
             self._speech_id += 1
             self.is_speaking = False
+
             engine = self.current_engine
             self.current_engine = None
 
-        if engine:
+            utterance_id = getattr(
+                self, "_current_utterance_id", None
+            )
+            self._current_utterance_id = None
+
+        if platform == "android":
+            if utterance_id is not None:
+                _android_tts_cancel(utterance_id)
+
+            try:
+                if _android_tts is not None:
+                    _android_tts.stop()
+                    print("[ANDROID TTS] Воспроизведение остановлено")
+            except Exception as e:
+                print(f"[ANDROID TTS STOP ERROR]: {e}")
+
+        if engine is not None:
             try:
                 engine.stop()
             except Exception:
                 pass
+
             try:
                 engine.endLoop()
-            except Exception:
-                pass
-
-        if platform == "android":
-            try:
-                global _android_tts
-                if _android_tts is not None:
-                    _android_tts.stop()
             except Exception:
                 pass
 
@@ -791,16 +946,21 @@ class VoiceAssistant:
     def speak(self, text, on_done_callback=None):
         if not text or not str(text).strip():
             if on_done_callback:
-                Clock.schedule_once(lambda dt: on_done_callback(), 0)
+                Clock.schedule_once(
+                    lambda dt: on_done_callback(), 0
+                )
             return
 
         if self.is_speaking:
             self.stop()
 
         clean_text = self.clean_text_for_tts(str(text))
+
         if not clean_text:
             if on_done_callback:
-                Clock.schedule_once(lambda dt: on_done_callback(), 0)
+                Clock.schedule_once(
+                    lambda dt: on_done_callback(), 0
+                )
             return
 
         self.last_spoken_text = clean_text.lower()
@@ -810,76 +970,62 @@ class VoiceAssistant:
             current_id = self._speech_id
             self.is_speaking = True
 
-        def _is_current_session():
+        self._current_utterance_id = None
+
+        def finish_speech():
             with self._speech_lock:
-                return self.is_speaking and self._speech_id == current_id
+                if self._speech_id != current_id:
+                    return
 
+                self.is_speaking = False
+                self._current_utterance_id = None
 
-        def _say_thread(cb=on_done_callback, speech_token=current_id, payload=clean_text):
+            print("[TTS] Реальное завершение озвучивания")
+
+            if on_done_callback:
+                on_done_callback()
+
+        if platform == "android":
+            if not _android_tts_ready:
+                print("[ANDROID TTS] Движок пока не готов")
+                finish_speech()
+                return
+
+            utterance_id = _android_tts_speak(
+                clean_text,
+                finish_speech
+            )
+
+            if utterance_id is None:
+                finish_speech()
+            else:
+                self._current_utterance_id = utterance_id
+
+            return
+
+        def _say_thread():
             engine = None
 
             try:
-                if platform == "android":
+                try:
+                    import pythoncom
+                    pythoncom.CoInitialize()
+                except Exception:
+                    pass
 
-                    if _android_tts is not None and _android_tts_ready:
-                        try:
-                            HashMap = autoclass("java.util.HashMap")
-                            params = HashMap()
+                import pyttsx3
 
-                            result = _android_tts.speak(payload, 0, params)
-                            print(f"[ANDROID TTS] speak result: {result}")
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 170)
 
-                            import time
-                            estimated_duration = max(1.8, len(payload) * 0.085)
-                            steps = int(estimated_duration / 0.2)
+                with self._speech_lock:
+                    if self._speech_id != current_id:
+                        return
 
-                            for _ in range(max(1, steps)):
-                                if not _is_current_session():
-                                    try:
-                                        _android_tts.stop()
-                                    except Exception:
-                                        pass
-                                    break
+                    self.current_engine = engine
 
-                                time.sleep(0.2)
-
-                            if _is_current_session():
-                                time.sleep(0.4)
-
-                        except Exception as e:
-                            print(f"[ANDROID TTS ERROR]: {e}")
-
-                    else:
-                        print(
-                            f"[ANDROID TTS NOT READY] "
-                            f"engine={_android_tts is not None}, "
-                            f"ready={_android_tts_ready}"
-                        )
-
-                else:
-                    try:
-                        import pythoncom
-                        pythoncom.CoInitialize()
-                    except Exception:
-                        pass
-
-                    import pyttsx3
-                    engine = pyttsx3.init()
-                    engine.setProperty("rate", 170)
-
-                    with self._speech_lock:
-                        if self._speech_id == speech_token:
-                            self.current_engine = engine
-                        else:
-                            engine = None
-
-                    if engine is not None and _is_current_session():
-                        engine.say(payload)
-                        engine.runAndWait()
-
-                    import time
-                    if _is_current_session():
-                        time.sleep(0.3)
+                engine.say(clean_text)
+                engine.runAndWait()
 
             except Exception as e:
                 print(f"[TTS ERROR]: {e}")
@@ -895,17 +1041,13 @@ class VoiceAssistant:
                     if self.current_engine == engine:
                         self.current_engine = None
 
-                    is_latest = (self._speech_id == speech_token)
+                finish_speech()
 
-                    if is_latest:
-                        self.is_speaking = False
-
-                if is_latest and cb:
-                    Clock.schedule_once(lambda dt: cb(), 0)
-
-
-        threading.Thread(target=_say_thread, daemon=True).start()
-
+        threading.Thread(
+            target=_say_thread,
+            daemon=True,
+            name="VoiceAssistant-TTS"
+        ).start()
 
     def set_voice_input_target(self, callback_func):
         self.voice_input_target = callback_func
@@ -6430,44 +6572,45 @@ class PhoneAssistantManager:
         return phone_number
 
     def speak_text(self, text):
-        """Озвучка текста через голосовой движок ассистента со всеми правилами очистки"""
+        """Озвучивание через основной VoiceAssistant."""
+
         if not text or not str(text).strip():
             return
 
+        text = str(text).strip()
+
         print(f"[TELEPHONY SPEECH REQUEST]: {text}")
 
-        # 1. Пытаемся найти метод озвучки в главном приложении или в его ассистенте
         assistant_ref = None
-        if self.app_instance:
-            if hasattr(self.app_instance, 'speak'):
-                assistant_ref = self.app_instance
-            elif hasattr(self.app_instance, 'assistant') and hasattr(self.app_instance.assistant, 'speak'):
-                assistant_ref = self.app_instance.assistant
 
-        # 2. Если нашли основной метод speak — используем его (он сам применит clean_text_for_tts)
-        if assistant_ref:
+        if self.app_instance:
+            assistant_ref = getattr(
+                self.app_instance,
+                "assistant",
+                None
+            )
+
+        if assistant_ref and callable(
+                getattr(assistant_ref, "speak", None)
+        ):
             try:
                 assistant_ref.speak(text)
+                print(
+                    "[TELEPHONY] Текст передан в VoiceAssistant"
+                )
                 return
-            except Exception as e:
-                print(f"[TELEPHONY ASSISTANT SPEAK ERROR]: {e}")
 
-        # 3. Запасной вариант через plyer, если ссылка на ассистента недоступна
-        cleaned_text = text
-        if self.app_instance and hasattr(self.app_instance, 'clean_text_for_tts'):
-            try:
-                cleaned_text = self.app_instance.clean_text_for_tts(text)
-            except Exception:
-                pass
-
-        if platform == 'android':
-            try:
-                from plyer import tts
-                tts.speak(cleaned_text)
             except Exception as e:
-                print(f"[TTS ERROR]: {e}")
-        else:
-            print(f"[PC SIMULATION SPEECH]: {cleaned_text}")
+                print(
+                    f"[TELEPHONY ASSISTANT SPEAK ERROR]: "
+                    f"{type(e).__name__}: {e}"
+                )
+
+        print(
+            "[TELEPHONY ERROR] "
+            "VoiceAssistant недоступен, озвучивание не выполнено"
+        )
+
 
 # ... конец speak_text ...
 
