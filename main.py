@@ -321,6 +321,7 @@ def _android_tts_speak(text, callback=None):
 
 
 
+
 if platform == "android":
     try:
         from jnius import autoclass, java_method, PythonJavaClass
@@ -333,28 +334,17 @@ if platform == "android":
         )
         Locale = autoclass("java.util.Locale")
 
-        class TTSProgressListener(PythonJavaClass):
+        # Слушатель завершения озвучивания.
+        # Это интерфейс, совместимый с PythonJavaClass.
+        class TTSCompletedListener(PythonJavaClass):
             __javainterfaces__ = [
-                "android/speech/tts/UtteranceProgressListener"
+                "android/speech/tts/TextToSpeech$OnUtteranceCompletedListener"
             ]
             __javacontext__ = "app"
 
             @java_method("(Ljava/lang/String;)V")
-            def onStart(self, utterance_id):
-                print(
-                    f"[ANDROID TTS STARTED] id={utterance_id}"
-                )
-
-            @java_method("(Ljava/lang/String;)V")
-            def onDone(self, utterance_id):
+            def onUtteranceCompleted(self, utterance_id):
                 _android_tts_complete(utterance_id)
-
-            @java_method("(Ljava/lang/String;)V")
-            def onError(self, utterance_id):
-                _android_tts_complete(
-                    utterance_id,
-                    "Ошибка воспроизведения"
-                )
 
         class TTSInitListener(PythonJavaClass):
             __javainterfaces__ = [
@@ -389,7 +379,7 @@ if platform == "android":
                         )
                         return
 
-                    _android_tts.setOnUtteranceProgressListener(
+                    _android_tts.setOnUtteranceCompletedListener(
                         _tts_progress_listener
                     )
 
@@ -405,12 +395,14 @@ if platform == "android":
                         f"[ANDROID TTS CONFIG ERROR]: {e}"
                     )
 
-        # Сохраняем слушателей глобально на всё время работы приложения.
-        _tts_progress_listener = TTSProgressListener()
+        # Сохраняем слушателей глобально.
+        _tts_progress_listener = TTSCompletedListener()
         _tts_listener = TTSInitListener()
 
+        activity = PythonActivity.mActivity
+
         _android_tts = TextToSpeech(
-            PythonActivity.mActivity,
+            activity,
             _tts_listener
         )
 
@@ -420,6 +412,7 @@ if platform == "android":
         print(f"[ANDROID TTS INIT ERROR]: {e}")
         _android_tts = None
         _android_tts_ready = False
+
 
 
 _audio_play_counter = itertools.count(1)
